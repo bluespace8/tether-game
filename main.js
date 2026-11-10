@@ -11,17 +11,26 @@
   }
 
   var state = null;
+  var firstRun = true;
   function newGame() {
-    var seed = intParam("seed");
+    var seed = firstRun ? intParam("seed") : null;     // ?seed fixes the first run only
     if (seed === null) seed = Date.now() >>> 0;
+    firstRun = false;
     var sector = intParam("sector");
     state = G.newRun(seed, sector !== null && sector >= 1 ? { sector: sector } : {});
     TetherInput.reset();
+    TetherUI.hideCards();
+    TetherRender.setBanner("SECTOR " + state.sector, performance.now());
   }
 
   var canvas = document.getElementById("game");
   TetherRender.init(canvas);
   TetherInput.init(canvas, function () { return state; }, TetherRender);
+  TetherUI.init({
+    onPick: function (id) {
+      if (G.pickCard(state, id).ok) { TetherUI.hideCards(); pump(); draw(); }
+    }
+  });
   newGame();
 
   var resizeTimer = 0;
@@ -35,31 +44,48 @@
   var lastDraw = 0;
   function draw() { TetherRender.draw(state, TetherInput.ui, performance.now()); }
 
+  // Drain the rules' event queue once and hand the events to the effects and the screens.
+  function pump() {
+    var events = G.drainEvents(state);
+    TetherRender.handleEvents(events, state);
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      if (e.type === "cards_offered") { TetherInput.reset(); TetherUI.showCards(state); }
+      else if (e.type === "sector_start") TetherRender.setBanner("SECTOR " + e.sector, performance.now());
+    }
+  }
+
   var acc = 0, last = 0;
   function frame(now) {
     requestAnimationFrame(frame);
     var dt = last ? Math.min(0.25, (now - last) / 1000) : 0;
     last = now;
-    acc += dt;
+    var live = state.phase === "play" || state.phase === "warp";
+    if (live) acc += dt; else acc = 0;
     var steps = 0;
-    while (acc >= G.TICK && steps < 5) {
+    while (live && acc >= G.TICK && steps < 5) {
       G.step(state);
       acc -= G.TICK;
       steps++;
+      if (state.phase !== "play" && state.phase !== "warp") break;
     }
     if (steps === 5) acc = 0;
     if (steps > 0) {
-      TetherRender.handleEvents(G.drainEvents(state));
+      pump();
       TetherRender.stepFx(steps * G.TICK);
       draw();
       lastDraw = now;
-    } else if (now - lastDraw > 250) {
+    } else if (now - lastDraw > 100) {
+      TetherRender.stepFx(Math.min(0.1, (now - lastDraw) / 1000));
       draw();
       lastDraw = now;
     }
   }
   requestAnimationFrame(frame);
 
-  // Pause the clock while the tab is hidden so a returning player does not lose the run.
+  // A returning player does not lose time to a long frame.
   document.addEventListener("visibilitychange", function () { last = 0; acc = 0; });
+
+  // Debug hook for headless checks.
+  window.__tetherState = function () { return state; };
 })();

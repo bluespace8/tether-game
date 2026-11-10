@@ -22,6 +22,10 @@ var TetherRender = (function () {
   var particles = [];
   var floats = [];
   var shapeCache = {};
+  var arcs = [];
+  var banner = null;     // { text, t0 } big sector title
+  var curState = null;
+  var warpAt = 0;        // performance time when the warp started, 0 = not warping
 
   function init(c) {
     canvas = c;
@@ -69,8 +73,8 @@ var TetherRender = (function () {
 
   // ---- effects (driven from events)
 
-  function addFloat(x, y, text, color) {
-    floats.push({ x: x, y: y, text: text, color: color, life: 1 });
+  function addFloat(x, y, text, color, life) {
+    floats.push({ x: x, y: y, text: text, color: color, life: life || 1 });
     if (floats.length > 12) floats.shift();
   }
   function addBurst(x, y, color, n) {
@@ -82,17 +86,28 @@ var TetherRender = (function () {
     while (particles.length > 150) particles.shift();
   }
 
-  function handleEvents(events) {
+  function setBanner(text, now) { banner = { text: text, t0: now }; }
+
+  function handleEvents(events, state) {
     for (var i = 0; i < events.length; i++) {
       var e = events[i];
       if (e.type === "delivery") addFloat(e.x, e.y - 30, "+" + Math.round(e.value * 10), COL[e.resource] || COL.text);
       else if (e.type === "tether_cut") addBurst(e.x, e.y, e.reason === "player" ? "#ffffff" : COL.warn, 6);
       else if (e.type === "rock_depleted") addBurst(e.x, e.y, COL.dim, 8);
       else if (e.type === "station_repaired") addFloat(180, 520, "+" + Math.round(e.amount * 10) / 10 + " hull", COL.ok);
+      else if (e.type === "relay_created") { addBurst(e.x, e.y, COL.tether, 12); addFloat(e.x, e.y - 22, "relay", COL.tether); }
+      else if (e.type === "crystal_chain" && state) {
+        var a = null, b = null;
+        for (var k = 0; k < state.rocks.length; k++) { if (state.rocks[k].id === e.from) a = state.rocks[k]; if (state.rocks[k].id === e.to) b = state.rocks[k]; }
+        if (a && b) { arcs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, life: 0.6 }); addBurst(b.x, b.y, COL.crystal, 10); }
+      } else if (e.type === "drone_split" && state) {
+        for (var q = 0; q < state.drones.length; q++) if (state.drones[q].id === e.droneId) addBurst(state.drones[q].x, state.drones[q].y, "#ffffff", 5);
+      } else if (e.type === "gauge_full") warpAt = performance.now();
     }
   }
 
   function stepFx(dt) {
+    for (var a = arcs.length - 1; a >= 0; a--) { arcs[a].life -= dt; if (arcs[a].life <= 0) arcs.splice(a, 1); }
     for (var i = particles.length - 1; i >= 0; i--) {
       var p = particles[i];
       p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt;
@@ -161,6 +176,19 @@ var TetherRender = (function () {
       ctx.beginPath(); ctx.arc(0, 0, r.r * 0.55, -1.5708, -1.5708 + 6.2832 * frac); ctx.stroke();
     }
     ctx.restore();
+    if (r.relay) drawRelayIcon(r);
+  }
+
+  function drawRelayIcon(r) {
+    var on = curState && G.powered(curState, r.id);
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.strokeStyle = on ? COL.tether : "#7a8794";
+    ctx.fillStyle = on ? "rgba(56,214,255,0.18)" : "rgba(120,130,145,0.12)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, T.relay.r, 0, 6.2832); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(6, 0); ctx.lineTo(0, 6); ctx.lineTo(-6, 0); ctx.closePath(); ctx.stroke();
+    ctx.restore();
   }
 
   // ---- layers
@@ -179,6 +207,7 @@ var TetherRender = (function () {
   }
 
   function drawField(state, ui, now) {
+    curState = state;
     var d = view.dpr, k = view.scale;
     ctx.setTransform(d * k, 0, 0, d * k, d * view.offX, d * view.offY);
     // field frame
@@ -202,10 +231,19 @@ var TetherRender = (function () {
       ctx.strokeStyle = brown ? "#2a3744" : COL.tetherDim;
       ctx.lineWidth = 2.4;
       ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
-      ctx.strokeStyle = t.kind === "idle" ? "#7a8794" : (brown ? "#5c93a6" : COL.tether);
+      ctx.strokeStyle = t.kind === "idle" ? "#7a8794" : t.kind === "link" ? "#bff4ff" : (brown ? "#5c93a6" : COL.tether);
       ctx.lineWidth = 1.1;
       ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
     }
+
+    for (i = 0; i < arcs.length; i++) {
+      var ar = arcs[i];
+      ctx.globalAlpha = Math.min(1, ar.life * 2);
+      ctx.strokeStyle = COL.crystal;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ar.x1, ar.y1); ctx.lineTo((ar.x1 + ar.x2) / 2 + (ar.y2 - ar.y1) * 0.15, (ar.y1 + ar.y2) / 2 - (ar.x2 - ar.x1) * 0.15); ctx.lineTo(ar.x2, ar.y2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
 
     // drones
     for (i = 0; i < state.drones.length; i++) {
@@ -343,12 +381,51 @@ var TetherRender = (function () {
     bar(x + w * 0.5, y + 62, w * 0.5 - 100, 10, pf, state.power.brownout ? COL.bad : COL.tether);
   }
 
+  function drawOverlays(state, now) {
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    var cx = view.offX + T.world.w * view.scale / 2, cy = view.offY + 210 * view.scale;
+    if (state.phase === "warp" || state.phase === "cards") {
+      var el = warpAt ? (now - warpAt) / 1000 : 0;
+      var fieldH = T.world.h * view.scale, fieldW = T.world.w * view.scale;
+      ctx.fillStyle = "rgba(124,108,255," + (state.phase === "cards" ? 0.22 : Math.min(0.25, el * 0.3)) + ")";
+      ctx.fillRect(view.offX, view.offY, fieldW, fieldH);
+      ctx.strokeStyle = "rgba(200,220,255,0.7)";
+      ctx.lineWidth = 1.5;
+      for (var i = 0; i < 36; i++) {
+        var x = view.offX + ((i * 97) % 360) / 360 * fieldW;
+        var len = 40 + (i % 5) * 30 + Math.min(1, el) * 90;
+        var y = (view.offY + (((i * 53) % 640) / 640 * fieldH + el * 900 * (0.6 + (i % 4) * 0.2)) % (fieldH + 120)) - 60;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + len); ctx.stroke();
+      }
+      ctx.font = "bold 26px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = COL.text;
+      ctx.fillText("WARP", cx, cy);
+    }
+    if (banner) {
+      var age = (now - banner.t0) / 1000;
+      if (age > 2.2) banner = null;
+      else {
+        ctx.globalAlpha = age < 1.4 ? 1 : Math.max(0, 1 - (age - 1.4) / 0.8);
+        ctx.font = "bold 34px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = "rgba(5,7,13,0.85)";
+        ctx.strokeText(banner.text, cx, cy + 50);
+        ctx.fillStyle = COL.text;
+        ctx.fillText(banner.text, cx, cy + 50);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
   function draw(state, ui, now) {
     drawBackground(state);
     drawField(state, ui, now);
     drawHud(state, now);
+    drawOverlays(state, now);
   }
 
-  return { init: init, resize: resize, toWorld: toWorld, draw: draw, handleEvents: handleEvents, stepFx: stepFx,
+  return { init: init, resize: resize, toWorld: toWorld, draw: draw, handleEvents: handleEvents, stepFx: stepFx, setBanner: setBanner, addFloat: addFloat,
            view: view, REASON: REASON };
 })();

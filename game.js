@@ -51,9 +51,47 @@
     events:  { max: 128 }
   });
 
-  // Filled in by later milestones (M2 and M4).
-  const CARDS = deepFreeze([]);
+  // Prototype pool: the 8 commons, Splitter, Live Wire, Crystal Chain and the Patch Kit filler (3.2).
+  // `fx` applies once per stack; `stackFx` (optional) lists the effects of each stack instead (Crystal Chain).
+  // `max: 0` means unlimited. The other rares and epics arrive in M4.
+  const CARDS = deepFreeze([
+    { id: "extra_drones", name: "Extra Drones", rarity: "common", max: 5, text: "+2 drones.", fx: [["droneAdd", "add", 2]] },
+    { id: "overclock", name: "Overclock", rarity: "common", max: 3, text: "Drones move 20% faster.", fx: [["droneSpeedMul", "mul", 1.2]] },
+    { id: "bigger_holds", name: "Bigger Holds", rarity: "common", max: 3, text: "+2 cargo per drone.", fx: [["capAdd", "add", 2]] },
+    { id: "power_cell", name: "Power Cell", rarity: "common", max: 4, text: "+25 power.", fx: [["powerAdd", "add", 25]] },
+    { id: "long_reach", name: "Long Reach", rarity: "common", max: 2, text: "Tethers reach 60 further and survive flares 30 longer.",
+      fx: [["maxLenAdd", "add", 60], ["severAdd", "add", 30]] },
+    { id: "point_defense", name: "Point Defense", rarity: "common", max: 3, text: "Turret range +25, damage +6/s.",
+      fx: [["turretRangeAdd", "add", 25], ["turretDpsAdd", "add", 6]] },
+    { id: "reinforced_hull", name: "Reinforced Hull", rarity: "common", max: 4, text: "+25 max hull and repair 25.",
+      fx: [["hullAdd", "add", 25]], now: [["heal", 25]] },
+    { id: "coolant_loop", name: "Coolant Loop", rarity: "common", max: 2, text: "Ice repairs +0.5 hull per unit.", fx: [["iceRepair", "add", 0.5]] },
+    { id: "splitter", name: "Splitter", rarity: "rare", max: 2, text: "A full drone splits off a shard: +40% load, delivered with it.",
+      fx: [["splitShare", "add", 0.4]] },
+    { id: "live_wire", name: "Live Wire", rarity: "rare", max: 2, text: "Raiders riding a tether take 10 damage per second.",
+      fx: [["zapDps", "add", 10]] },
+    { id: "crystal_chain", name: "Crystal Chain", rarity: "epic", max: 2,
+      text: "A mined-out crystal turns the nearest rock within 90 into crystal.",
+      fx: [["chainRange", "add", 90]], stackFx: [[["chainRange", "add", 90]], [["chainRange", "add", 40]]] },
+    { id: "patch_kit", name: "Patch Kit", rarity: "filler", max: 0, text: "Repair 30 hull.", fx: [], now: [["heal", 30]] }
+  ]);
   const LOOKS = deepFreeze([]);
+
+  // Effect text for a card at a stack count (what you have once you own `stacks`).
+  const CARD_TEXT = {
+    extra_drones: function (n) { return "+" + 2 * n + " drones."; },
+    overclock: function (n) { return "Drones move " + Math.round((Math.pow(1.2, n) - 1) * 100) + "% faster."; },
+    bigger_holds: function (n) { return "+" + 2 * n + " cargo per drone."; },
+    power_cell: function (n) { return "+" + 25 * n + " power."; },
+    long_reach: function (n) { return "Tethers reach " + 60 * n + " further; flare limit +" + 30 * n + "."; },
+    point_defense: function (n) { return "Turret range +" + 25 * n + ", damage +" + 6 * n + "/s."; },
+    reinforced_hull: function (n) { return "+" + 25 * n + " max hull; repairs 25 when taken."; },
+    coolant_loop: function (n) { return "Ice repairs " + (0.5 + 0.5 * n) + " hull per unit."; },
+    splitter: function (n) { return "A full drone splits off a shard worth +" + 40 * n + "% of its load."; },
+    live_wire: function (n) { return "Raiders riding a tether take " + 10 * n + " damage per second."; },
+    crystal_chain: function (n) { return "A mined-out crystal turns the nearest rock within " + (n >= 2 ? 130 : 90) + " into crystal."; },
+    patch_kit: function () { return "Repair 30 hull."; }
+  };
 
   const T = TUNING;
 
@@ -139,13 +177,25 @@
     CARDS.forEach(function (c) {
       const n = (cards && cards[c.id]) || 0;
       for (let i = 0; i < n; i++) {
-        c.fx.forEach(function (fx) {
+        (c.stackFx ? c.stackFx[Math.min(i, c.stackFx.length - 1)] : c.fx).forEach(function (fx) {
           if (fx[1] === "add") m[fx[0]] += fx[2];
           else m[fx[0]] *= fx[2];
         });
       }
     });
     return m;
+  }
+
+  function getCard(id) {
+    for (let i = 0; i < CARDS.length; i++) if (CARDS[i].id === id) return CARDS[i];
+    return null;
+  }
+
+  function cardText(cardId, stacks) {
+    const c = getCard(cardId);
+    if (!c) return "";
+    const f = CARD_TEXT[cardId];
+    return f ? f(Math.max(1, stacks || 0)) : c.text;
   }
 
   // ---------------------------------------------------------------- helpers
@@ -190,6 +240,16 @@
     let u = l2 > 0 ? ((px - x1) * dx + (py - y1) * dy) / l2 : 0;
     u = Math.max(0, Math.min(1, u));
     return dist(px, py, x1 + u * dx, y1 + u * dy);
+  }
+
+  // Nearest point on a segment: { x, y, u (0..1), d (distance from p) }.
+  function closestOnSeg(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const l2 = dx * dx + dy * dy;
+    let u = l2 > 0 ? ((px - x1) * dx + (py - y1) * dy) / l2 : 0;
+    u = Math.max(0, Math.min(1, u));
+    const x = x1 + u * dx, y = y1 + u * dy;
+    return { x: x, y: y, u: u, d: dist(px, py, x, y) };
   }
 
   function orient(ax, ay, bx, by, cx, cy) {
@@ -564,12 +624,147 @@
     return { kind: null, id: 0 };
   }
 
+  function makeRelay(state, rockId) {
+    const fail = function (reason) { return { ok: false, reason: reason }; };
+    if (state.phase !== "play") return fail("bad_phase");
+    const rock = getRock(state, rockId);
+    if (!rock) return fail("no_rock");
+    if (rock.relay) return fail("already_relay");
+    if (!rock.depleted) return fail("not_depleted");
+    const link = getTether(state, rock.tether);
+    if (!link) return fail("not_tethered");
+    let count = 0;
+    for (let i = 0; i < state.rocks.length; i++) if (state.rocks[i].relay) count++;
+    if (count >= T.relay.max) return fail("relay_cap");
+    if (relayDepth(state, link.from) + 1 > T.relay.depth) return fail("too_deep");
+    rock.relay = true;
+    link.kind = "link";
+    state.stats.relaysMade++;
+    emit(state, { type: "relay_created", id: rock.id, x: rock.x, y: rock.y });
+    return { ok: true, reason: "" };
+  }
+
+  function endRun(state, reason) {
+    if (state.phase === "over") return;
+    state.phase = "over";
+    state.station.beam = 0;
+    state.over = { reason: reason, score: state.score, sector: state.sector, starsRun: 0 };
+    emit(state, { type: "run_over", reason: reason, score: state.score, sector: state.sector, starsRun: 0 });
+  }
+
   function abandonRun(state) {
     if (state.phase === "over") return { ok: false, reason: "bad_phase" };
-    state.phase = "over";
-    state.over = { reason: "abandoned", score: state.score, sector: state.sector, starsRun: 0 };
-    emit(state, { type: "run_over", reason: "abandoned", score: state.score, sector: state.sector, starsRun: 0 });
+    endRun(state, "abandoned");
     return { ok: true, reason: "" };
+  }
+
+  // ---------------------------------------------------------------- warp and cards
+
+  function drawOffer(state) {
+    const pool = CARDS.filter(function (c) {
+      if (c.id === "patch_kit") return false;
+      if ((state.cards[c.id] || 0) >= c.max) return false;
+      if (c.rarity === "epic" && state.sector < T.cards.epicFrom) return false;
+      return true;
+    });
+    const offer = [];
+    const rarities = ["common", "rare", "epic"];
+    for (let slot = 0; slot < T.cards.offer && pool.length > 0; slot++) {
+      let total = 0;
+      for (let i = 0; i < rarities.length; i++) {
+        if (pool.some(function (c) { return c.rarity === rarities[i]; })) total += T.cards.weights[rarities[i]];
+      }
+      let roll = rnd(state, "cards") * total, rarity = null;
+      for (let i = 0; i < rarities.length; i++) {
+        if (!pool.some(function (c) { return c.rarity === rarities[i]; })) continue;
+        rarity = rarities[i];
+        if (roll < T.cards.weights[rarities[i]]) break;
+        roll -= T.cards.weights[rarities[i]];
+      }
+      const same = pool.filter(function (c) { return c.rarity === rarity; });
+      const card = same[Math.min(same.length - 1, Math.floor(rnd(state, "cards") * same.length))];
+      offer.push(card.id);
+      pool.splice(pool.indexOf(card), 1);
+    }
+    if (offer.length < T.cards.offer) offer.push("patch_kit");
+    return offer;
+  }
+
+  function heal(state, n) {
+    const before = state.station.hp;
+    state.station.hp = Math.min(state.station.hpMax, before + n);
+    if (state.station.hp > before) {
+      emit(state, { type: "station_repaired", hp: state.station.hp, amount: state.station.hp - before });
+    }
+  }
+
+  function startNextSector(state) {
+    state.tethers.length = 0;
+    state.rocks.length = 0;
+    state.raiders.length = 0;
+    for (let i = 0; i < state.drones.length; i++) resetDrone(state, state.drones[i]);
+    state.station.beam = 0;
+    if (state.power.brownout) {
+      state.power.brownout = false;
+      emit(state, { type: "brownout", on: false });
+    }
+    heal(state, T.station.warpRepair);
+    state.sector++;
+    state.params = sectorParams(state.sector);
+    state.gauge = 0;
+    state.phase = "play";
+    state.phaseT = 0;
+    state.offer = [];
+    state.flare.blocksLeft = state.mods.flareBlocks;
+    startSectorField(state);
+    computePower(state);
+    emit(state, { type: "sector_start", sector: state.sector, params: state.params });
+  }
+
+  function pickCard(state, cardId) {
+    if (state.phase !== "cards") return { ok: false, reason: "bad_phase" };
+    if (state.offer.indexOf(cardId) < 0) return { ok: false, reason: "not_offered" };
+    const card = getCard(cardId);
+    state.cards[cardId] = (state.cards[cardId] || 0) + 1;
+    state.mods = computeMods(state.cards);
+    state.stats.cardsPicked++;
+    state.station.hpMax = T.station.hp + state.mods.hullAdd;
+    if (card.now) {
+      for (let i = 0; i < card.now.length; i++) if (card.now[i][0] === "heal") heal(state, card.now[i][1]);
+    }
+    const want = Math.min(T.drones.max, T.drones.start + state.mods.droneAdd);
+    while (state.drones.length < want) state.drones.push(newDrone(state));
+    emit(state, { type: "card_picked", id: cardId, stacks: state.cards[cardId] });
+    startNextSector(state);
+    return { ok: true, reason: "" };
+  }
+
+  function checkGauge(state) {
+    if (state.phase !== "play" || state.gauge < state.params.gaugeMax - 1e-9) return;
+    state.phase = "warp";
+    state.phaseT = T.warp.time;
+    state.score += T.score.sector * state.sector;
+    emit(state, { type: "gauge_full", sector: state.sector });
+  }
+
+  // Ruling W1: in warp only the field drifts; drones, raiders and timers freeze and nothing deals damage.
+  function stepWarp(state) {
+    stepField(state);
+    updateTethers(state);
+    computePower(state);
+    for (let i = 0; i < state.drones.length; i++) {
+      const d = state.drones[i];
+      if (d.mode === "idle" || !d.tether) continue;
+      const p = pointAlong(state, d.tether, d.d);
+      d.x = p.x; d.y = p.y;
+    }
+    state.phaseT -= TICK;
+    if (state.phaseT <= 1e-9) {
+      state.phaseT = 0;
+      state.phase = "cards";
+      state.offer = drawOffer(state);
+      emit(state, { type: "cards_offered", ids: state.offer.slice() });
+    }
   }
 
   // ---------------------------------------------------------------- simulation
@@ -653,6 +848,20 @@
     rock.depleted = true;
     if (tether) tether.kind = "idle";
     emit(state, { type: "rock_depleted", id: rock.id, x: rock.x, y: rock.y, star: false });
+    if (rock.type === "crystal" && state.mods.chainRange > 0) {
+      // Crystal Chain: the nearest live, non-crystal rock in range turns to crystal (and chains on when it empties).
+      let best = null, bestD = Infinity;
+      for (let i = 0; i < state.rocks.length; i++) {
+        const k = state.rocks[i];
+        if (k === rock || k.depleted || k.relay || k.type === "crystal") continue;
+        const d = dist(rock.x, rock.y, k.x, k.y);
+        if (d <= state.mods.chainRange && d < bestD) { bestD = d; best = k; }
+      }
+      if (best) {
+        best.type = "crystal";
+        emit(state, { type: "crystal_chain", from: rock.id, to: best.id });
+      }
+    }
     for (let i = 0; i < state.drones.length; i++) {
       const d = state.drones[i];
       if (tether && d.tether === tether.id && (d.mode === "out" || d.mode === "mine")) d.mode = "back";
@@ -679,6 +888,7 @@
       }
     }
     resetDrone(state, d);
+    checkGauge(state);
   }
 
   function stepDrones(state) {
@@ -710,7 +920,10 @@
           if (rock.amount <= 1e-9) depleteRock(state, rock, t);
           if (d.cargo >= cap - 1e-9) {
             d.mode = "back";
-            if (state.mods.splitShare > 0) d.bonus = d.cargo * state.mods.splitShare;
+            if (state.mods.splitShare > 0) {
+              d.bonus = d.cargo * state.mods.splitShare;
+              emit(state, { type: "drone_split", droneId: d.id });
+            }
           } else if (rock.depleted) d.mode = "back";
         }
       } else if (d.mode === "back") {
@@ -730,6 +943,7 @@
   function step(state) {
     if (state.phase === "over" || state.phase === "cards") return;
     state.tick++;
+    if (state.phase === "warp") { stepWarp(state); return; }
     state.sectorTick++;
     stepField(state);
     updateTethers(state);
@@ -788,6 +1002,7 @@
     hash32: hash32, mulberry32: mulberry32,
     newRun: newRun, step: step, abandonRun: abandonRun, sectorParams: sectorParams, computeMods: computeMods,
     pick: pick, previewTether: previewTether, tryTether: tryTether, cutTether: cutTether, cutAcross: cutAcross,
+    makeRelay: makeRelay, pickCard: pickCard, cardText: cardText,
     tetherEnds: tetherEnds, powered: powered, drainEvents: drainEvents, hashState: hashState,
     serializeRun: serializeRun, loadRun: loadRun
   };
