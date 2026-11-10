@@ -119,6 +119,9 @@ Score per unit delivered = 10 x gauge value.
   the drone back. On unload: add to gauge, score, stats; ice repairs; emit `delivery`.
 - If a rock empties, drones heading out turn back empty; the rock becomes a **husk** (`depleted: true`) and
   its tether stays (still costing power) until the player relays it or cuts it.
+- **Tether kind transitions (ruling W3).** A `mine` tether becomes `idle` when its rock empties (the rock is
+  now a husk). An `idle` tether becomes `link` on `makeRelay`. A new tether to an inert relay starts as
+  `link`. No other transitions exist.
 
 ### 2.6 Relays
 
@@ -132,6 +135,8 @@ Score per unit delivered = 10 x gauge value.
   stays as an inert relay and can be re-linked by drawing a tether from the station or another powered relay
   to it. Drawing to an inert relay creates a link tether (no drones).
 - Relay radius drawn 12 (icon over the husk); its hit radius is the husk's.
+- Kind transitions are listed in 2.5 (`idle` becomes `link` on `makeRelay`; a new tether to an inert relay
+  starts as `link`).
 
 ### 2.7 Station, turret, damage
 
@@ -142,7 +147,8 @@ Score per unit delivered = 10 x gauge value.
 
 ### 2.8 Solar flares (from sector 2)
 
-- Timer `flareGap` s (jitter +-25%), first flare 20 s into the sector.
+- Timer `flareGap` s (jitter +-25%), first flare strikes 20 s into the sector, so its warning starts at 17 s
+  (ruling W6).
 - Warning 3.0 s (`flare_warning`): screen edge glows, every tether currently longer than `severLen` is drawn
   pulsing red so the player can shorten or cut them.
 - On fire: every tether with length > `severLen` (+ `mods.severAdd`) is cut with reason `"flare"`.
@@ -152,11 +158,17 @@ Score per unit delivered = 10 x gauge value.
 
 - Every `raidGap` s (jitter +-25%, first wave 15 s into the sector) a wave of `raidCount` raiders is warned:
   a red marker at the top edge for 2.5 s at each spawn x (uniform [30, 330]).
+- First raid (ruling W6): warned at 15 s into the sector, raiders spawn 2.5 s later at 17.5 s.
+- Raiders spawn at y = 0 (ruling W2).
 - Mode `approach`: fly straight at 30 u/s toward the nearest point on any tether; latch when within 6 u.
-  With no tethers, fly straight at the station.
+  With no tethers, fly straight at the station. The nearest tether point is recomputed every tick (ruling
+  W2).
 - Mode `ride`: travel along the tether's path toward the station at `rideSpeed`; switching tethers at relays
   follows the link.
 - **Cutting the tether a raider rides kills it** ("snapped", +50 score). Turret and Live Wire also kill.
+  Any removal of the ridden tether (player, flare, overstretch, offscreen, cascade) kills the raider with
+  `by: "snap"` (ruling W2). A raider's `d` is its distance from the station along the path and decreases
+  while riding.
 - Reaching the station (within station r): deals `ramDmg`, raider removed (`station_hit`).
 - Raider radius 9, HP `raiderHp`. Max 12 raiders alive.
 
@@ -166,6 +178,10 @@ Score per unit delivered = 10 x gauge value.
   keeps drifting, no damage), then phase `cards` with three offers. After a pick: all tethers removed, all
   drones idle, rocks/raiders cleared, station +15 HP, sector++, new field pre-placed, phase `play`.
 - Score +300 x (sector just cleared). Stars +1 per warp.
+- **Warp and cards phases (ruling W1).** During `warp` only the field drifts (offscreen cuts still apply);
+  drones, raiders and timers freeze and nothing deals damage. The gauge clamps at `gaugeMax`; overflow is
+  lost. The sector score (+300 x n) is added when the gauge fills (event `gauge_full`). Warp repair is
+  capped at `hpMax`. `step` is a no-op in phases `cards` and `over`.
 
 **Difficulty table** (n = sector). All values are guesses to tune. Formulas in `TUNING.sectors`.
 
@@ -258,6 +274,7 @@ const CARDS = [
 - Base mods: `{ droneAdd:0, droneSpeedMul:1, capAdd:0, powerAdd:0, costMul:1, relayCostMul:1, maxLenAdd:0,
   severAdd:0, splitShare:0, zapDps:0, chainRange:0, turretRangeAdd:0, turretDpsAdd:0, hullAdd:0,
   iceRepair:0.5, flareBlocks:0, noOverstretch:0 }`.
+- Optional `stackFx`: an array with one `fx` list per stack. Stack n applies `stackFx[min(n-1, last)]` instead of `fx` (Crystal Chain: +90 range, then +40 per further stack). Cards without it repeat `fx` each stack.
 - Cards with an immediate effect (heal) carry `now: [["heal", n]]`, applied on pick.
 - Drone count change takes effect at once: new drones are added idle at the station.
 
@@ -448,7 +465,7 @@ front end maps them to text (section 9.6). The front end **must not** write to s
 | Function | Returns | Failure reasons |
 |---|---|---|
 | `newRun(seed, opts?)` opts `{ sector?: n, stress?: bool }` | state | - (seed coerced `>>> 0`) |
-| `step(state)` | undefined; advances exactly one tick; no-op in phase `over` | - |
+| `step(state)` | undefined; advances exactly one tick; no-op in phases `cards` and `over` | - |
 | `abandonRun(state)` | `{ ok, reason }` sets `over.reason = "abandoned"` | `"bad_phase"` (already over) |
 | `sectorParams(n)` | params object (5.1) | - |
 | `computeMods(cards)` | mods object | - |
@@ -506,7 +523,7 @@ the front end must never need them to draw the state correctly.
 | `tether_cut` | `id, reason: "player"|"flare"|"overstretch"|"offscreen"|"cascade"`, `x, y` (midpoint) | snip, sparks |
 | `rock_depleted` | `id, x, y, star` | puff; hint "tap to relay" if tethered |
 | `relay_created` | `id, x, y` | chime, ring |
-| `delivery` | `type, amount, value, x, y` | throttled tick sound, +N float text |
+| `delivery` | `resource, amount, value, x, y` | throttled tick sound, +N float text |
 | `station_repaired` | `hp, amount` | green float text |
 | `brownout` | `on: bool` | power meter flash, low hum |
 | `drone_split` | `droneId` | small shard sprite |
@@ -543,6 +560,10 @@ the front end must never need them to draw the state correctly.
   `?seed=N` in the URL.
 
 ### 6.8 Changing the contract
+
+Ruling W5: the whole of section 5.1 except the star fields (`starsRun`, `star` on rocks) is the contract
+from M1, and `newRun` accepts `opts.sector` from M1 (it starts the run in that sector, with that sector's
+params and pre-placed field).
 
 Any change to 5.1, 6.x or the event list is a doc change in this file on its own commit, reviewed before
 either branch builds on it. Additive fields and events are allowed without a review; renames and removals
@@ -646,7 +667,8 @@ any --cancel--> idle, no action
 3. Rocks (pre-rendered sprites per type x size x dpr; star rocks get a glint)
 4. Tethers (dim base line 2 u, bright core 1 u; doomed tethers pulse red; brownout dims)
 5. Drones (3 u dot or look sprite; cargo colour fill; split shard)
-6. Raiders, warn markers, turret beam, Live Wire sparks
+6. Raiders, warn markers, turret beam, Live Wire sparks (drawn from `mods.zapDps > 0` and a raider with
+   `mode === "ride"`; no event, ruling W7)
 7. Station (look sprite, HP ring)
 8. Effects (particles, float texts)
 9. Gesture layer (preview line, snap ring, cost label, cut trail)
@@ -909,7 +931,8 @@ central 80% circle. Produced by hand (or drawn once by a small canvas page in to
 
 Runner copied in style from Fleet: `test(name, fn)`, `eq`, `ok`, `near`, prints each test and
 `N passed, M failed`, exits non-zero on failure. Run with
-`ELECTRON_RUN_AS_NODE=1 "E:\Evan\Programs\VSCode\Code.exe" tests.js`.
+`ELECTRON_RUN_AS_NODE=1 "E:\Evan\Programs\VSCode\Code.exe" tests.js` (PowerShell:
+`$env:ELECTRON_RUN_AS_NODE=1; & 'E:\Evan\Programs\VSCode\Code.exe' tests.js`).
 
 Must cover:
 
@@ -1001,13 +1024,13 @@ with the shapes in 5.1. Tester and reviewer run after each pair.
 | Rules | flares (warning, doomed, sever), raiders (warn, approach, latch, ride, snap kill, ram), turret, station HP, run over, `abandonRun`, raider/flare score |
 | Front end | flare glow/flash/tint, raid markers, raiders, turret beam, HP bar, station hit feedback, pause sheet, run over screen (9.3) |
 | Contract | events `flare_warning`, `flare`, `raid_warning`, `raider_spawn`, `raider_latched`, `raider_killed`, `station_hit`, `run_over`; `state.over` |
-| Accept | hazard tests pass; a full run ends in destruction in about 3-5 minutes for a casual tester (a guide, section 14 question 6); `?sector=3` shows raiders at once |
+| Accept | hazard tests pass; a full run ends in destruction in about 3-5 minutes for a casual tester (a guide, section 14 question 6); `?sector=3` shows the first raid warning within about 15 s |
 
 ### M4. Full card set, stars, saves
 
 | | |
 |---|---|
-| Rules | remaining 7 cards (rares, epics, special mechanics), star rocks and stars, profile functions, `serializeRun`/`loadRun`, `bankRun` |
+| Rules | remaining 7 cards (rares, epics, special mechanics), star rocks and stars, profile functions, `bankRun`. (`serializeRun` and `loadRun`, rules only, were brought forward from M4 into the prototype.) |
 | Front end | storage.js (keys, damaged copies, quota), autosave timing, resume/abandon on home, home screen, best score, card rarity styling, split shard and chain effects |
 | Contract | 5.2, 5.3, 6.5; events `drone_split`, `crystal_chain`, `flare_blocked`, `star_collected` |
 | Accept | save round-trip tests; killing the tab mid-run and reopening resumes the same tick-state; stars bank exactly once |
@@ -1029,6 +1052,15 @@ with the shapes in 5.1. Tester and reviewer run after each pair.
 | Front end | manifest, sw.js, icons, update flow, `?stress`, perf overlay polish, sprite caching audit |
 | Contract | none new |
 | Accept | installable on Android, works offline; checklist 21-22 pass; Lighthouse PWA installable checks pass; full manual checklist green |
+
+---
+
+### Prototype scope (ruling W4)
+
+The first prototype (M1 to M3 plus three cards) has no profile, stars, hangar, home screen or saves. Run
+over shows score, sector reached and stats, with Play again. Pause offers Resume, Restart and Quit (Quit
+calls `abandonRun` and shows run over). Stars and star rocks are hidden or left out. The seed is
+`Date.now() >>> 0`, or `?seed=N`.
 
 ---
 
