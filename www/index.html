@@ -19,6 +19,29 @@
   <button id="cards-take" class="primary" type="button" disabled>Take</button>
 </section>
 
+<button id="btn-pause" class="hud-btn" type="button" aria-label="Pause">II</button>
+
+<section id="screen-pause" class="screen" hidden>
+  <h1>PAUSED</h1>
+  <div class="spacer"></div>
+  <button id="pause-resume" class="primary" type="button">Resume</button>
+  <button id="pause-restart" class="secondary" type="button">Restart</button>
+  <button id="pause-quit" class="secondary" type="button">Quit</button>
+  <div class="spacer"></div>
+</section>
+
+<section id="screen-over" class="screen" hidden>
+  <h1 id="over-title">RUN OVER</h1>
+  <div class="spacer"></div>
+  <div class="sub">SCORE</div>
+  <div id="over-score" class="big">0</div>
+  <div id="over-sector" class="stat"></div>
+  <div id="over-delivered" class="stat"></div>
+  <div id="over-extra" class="stat"></div>
+  <div class="spacer"></div>
+  <button id="over-again" class="primary" type="button">Play again</button>
+</section>
+
 <script src="game.js"></script>
 <script src="render.js"></script>
 <script src="input.js"></script>

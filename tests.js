@@ -927,7 +927,343 @@ test("crystal chain: mined-out crystal turns the nearest live non-crystal rock w
   eq(o.type, "ore");
 });
 
+// ---- flares
+
+// Station at (180, 560): a 150 u tether to (180, 410) and a 250 u tether to (180, 310).
+function flareRig(sector) {
+  const s = rich(quiet(1, { sector: sector || 2 }));
+  s.params.scroll = 0;
+  const shortR = addRock(s, { x: 180, y: 410 }), longR = addRock(s, { x: 180, y: 310 });
+  const a = G.tryTether(s, 0, shortR.id).id, b = G.tryTether(s, 0, longR.id).id;
+  G.drainEvents(s);
+  return { s: s, shortId: a, longId: b, shortR: shortR, longR: longR };
+}
+function runTo(s, tick) { while (s.tick < tick) G.step(s); }
+function evsOf(s, type) { return G.drainEvents(s).filter(function (e) { return e.type === type; }); }
+
+test("flares: none in sector 1", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  run(s, 60 * 90);
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "flare_warning" || e.type === "flare"; }).length, 0);
+});
+test("flares: warning 3 s ahead of the first strike at 20 s; only tethers over severLen are doomed and cut", function () {
+  const o = flareRig(2);
+  const s = o.s;
+  runTo(s, 1019);
+  eq(s.timers.flareWarn, 0, "no warning yet");
+  runTo(s, 1021);
+  const w = evsOf(s, "flare_warning");
+  eq(w.length, 1);
+  eq(w[0].in, 3); eq(w[0].doomed, [o.longId]);
+  near(s.timers.flareWarn, 3, 0.05);
+  eq(s.tethers.find(function (t) { return t.id === o.longId; }).doomed, true);
+  eq(s.tethers.find(function (t) { return t.id === o.shortId; }).doomed, false);
+  runTo(s, 1199);
+  eq(s.tethers.length, 2, "not yet");
+  G.drainEvents(s);
+  runTo(s, 1201);
+  const f = evsOf(s, "flare");
+  eq(f.length, 1); eq(f[0].cut, [o.longId]);
+  eq(s.tethers.length, 1); eq(s.tethers[0].id, o.shortId);
+  eq(s.stats.flaresSurvived, 1);
+  eq(s.timers.flareWarn, 0);
+  ok(s.timers.flare >= 30 * 0.75 - 1e-9 && s.timers.flare <= 30 * 1.25 + 1e-9, "next gap " + s.timers.flare);
+  near(s.power.use, s.tethers[0].cost, 1e-9);
+});
+test("flares: cut reason is flare, cascades follow, and shortening a doomed tether saves it", function () {
+  const s = rich(quiet(1, { sector: 2 }));
+  s.params.scroll = 0;
+  const h = addRock(s, { x: 180, y: 330, amount: 0 });
+  s.tethers.push({ id: s.nextId++, from: 0, to: h.id, kind: "idle", len: 230, cost: 57.5, doomed: false, lastLaunch: -1000 });
+  h.tether = s.tethers[0].id;
+  G.makeRelay(s, h.id);
+  const out = addRock(s, { x: 180, y: 250 });
+  ok(G.tryTether(s, h.id, out.id).ok);
+  G.drainEvents(s);
+  runTo(s, 1201);
+  const cuts = G.drainEvents(s).filter(function (e) { return e.type === "tether_cut"; }).map(function (e) { return e.reason; });
+  eq(cuts, ["flare", "cascade"]);
+  const o = flareRig(2);
+  runTo(o.s, 1050);
+  G.cutTether(o.s, o.longId);
+  const rr = addRock(o.s, { x: 180, y: 420 });
+  ok(G.tryTether(o.s, 0, rr.id).ok);
+  G.drainEvents(o.s);
+  runTo(o.s, 1201);
+  eq(o.s.tethers.length, 2, "nothing over the limit, nothing cut");
+  eq(evsOf(o.s, "flare")[0].cut, []);
+});
+test("flares: Flare Shield style blocks stop a flare; Long Reach raises the limit", function () {
+  const o = flareRig(2);
+  o.s.flare.blocksLeft = 1;
+  runTo(o.s, 1201);
+  const ev = G.drainEvents(o.s);
+  eq(ev.filter(function (e) { return e.type === "flare_blocked"; }), [{ type: "flare_blocked", blocksLeft: 0 }]);
+  eq(ev.filter(function (e) { return e.type === "flare"; }).length, 0);
+  eq(o.s.tethers.length, 2);
+  const one = flareRig(2);
+  one.s.mods = G.computeMods({ long_reach: 1 });
+  rich(one.s);
+  runTo(one.s, 1201);
+  eq(one.s.tethers.length, 1, "limit 230: the 250 u tether still goes");
+  const two = flareRig(2);
+  two.s.mods = G.computeMods({ long_reach: 2 });
+  rich(two.s);
+  runTo(two.s, 1201);
+  eq(two.s.tethers.length, 2, "limit 260: both survive");
+});
+
+// ---- raiders
+
+function raider(s, o) {
+  const p = s.params;
+  const r = { id: s.nextId++, x: o.x, y: o.y, hp: o.hp || p.raiderHp, hpMax: o.hp || p.raiderHp, mode: o.mode || "approach",
+              tether: o.tether || 0, d: o.d || 0, t: o.t || 0 };
+  s.raiders.push(r);
+  return r;
+}
+function raidRig() {
+  const s = rich(quiet(1, { sector: 3 }));
+  s.params.scroll = 0;
+  s.timers.flare = 1e9; s.timers.raid = 1e9;
+  const a = addRock(s, { x: 180, y: 400 });
+  const id = G.tryTether(s, 0, a.id).id;
+  G.drainEvents(s);
+  return { s: s, rock: a, tid: id };
+}
+
+test("raiders: none before sector 3", function () {
+  const s = quiet(1, { sector: 2 });
+  s.params.scroll = 0;
+  run(s, 60 * 70);
+  eq(s.raiders.length, 0);
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "raid_warning"; }).length, 0);
+});
+test("raiders: first raid is warned at 15 s and spawns at 17.5 s at y = 0", function () {
+  const s = quiet(1, { sector: 3 });
+  s.params.scroll = 0;
+  s.timers.flare = 1e9;
+  runTo(s, 899);
+  eq(s.raiders.length, 0);
+  runTo(s, 902);
+  const w = evsOf(s, "raid_warning");
+  eq(w.length, 1); eq(w[0].in, 2.5); eq(w[0].xs.length, 1);
+  ok(w[0].xs[0] >= 30 && w[0].xs[0] <= 330);
+  eq(s.raiders.length, 1); eq(s.raiders[0].mode, "warn"); eq(s.raiders[0].y, 0); near(s.raiders[0].x, w[0].xs[0], 1e-9);
+  runTo(s, 1047);
+  eq(s.raiders[0].mode, "warn");
+  runTo(s, 1052);
+  const sp = evsOf(s, "raider_spawn");
+  eq(sp.length, 1); eq(sp[0].y, 0);
+  ok(s.raiders[0].mode === "approach");
+  eq(s.raiders[0].hp, 30);
+});
+test("raiders: wave size follows raidCount and the cap of 12", function () {
+  const s = quiet(1, { sector: 7 });
+  s.params.scroll = 0; s.timers.flare = 1e9;
+  runTo(s, 902);
+  eq(s.raiders.length, 3);
+  const t = quiet(1, { sector: 7 });
+  t.params.scroll = 0; t.timers.flare = 1e9;
+  for (let i = 0; i < 11; i++) raider(t, { x: 10, y: 10, mode: "warn", t: 1e9 });
+  runTo(t, 902);
+  eq(t.raiders.length, 12);
+});
+test("raiders: approach, latch, ride, ram the station for ramDmg", function () {
+  const o = raidRig();
+  const s = o.s;
+  const r = raider(s, { x: 183, y: 405 });                 // already close to the tether
+  s.station.beam = 0;
+  s.mods.turretRangeAdd = -70;                           // no turret in this test
+  run(s, 1);
+  eq(r.mode, "ride"); eq(r.tether, o.tid);
+  eq(evsOf(s, "raider_latched"), [{ type: "raider_latched", id: r.id, tether: o.tid }]);
+  const d0 = r.d;
+  run(s, 30);
+  ok(r.d < d0, "d decreases while riding");
+  near(d0 - r.d, 32 * 30 * TICK, 1e-6);
+  run(s, 600);
+  eq(s.raiders.length, 0);
+  eq(s.station.hp, 85);
+  const hit = evsOf(s, "station_hit");
+  eq(hit, [{ type: "station_hit", damage: 15, hp: 85, hpMax: 100 }]);
+  eq(s.stats.raidersKilled, 0, "ramming is not a kill");
+});
+test("raiders: approach retargets the nearest tether point every tick", function () {
+  const o = raidRig();
+  const s = o.s;
+  const r = raider(s, { x: 20, y: 100 });
+  run(s, 60);
+  const x1 = r.x, y1 = r.y;
+  ok(r.mode === "approach");
+  ok(Math.hypot(x1 - 20, y1 - 100) > 25, "moved about 30 u");
+  // a nearer tether appears: next tick heads for it
+  const b = addRock(s, { x: 120, y: 300 });
+  ok(G.tryTether(s, 0, b.id).ok);
+  function dSeg() {
+    const dx = 120 - 180, dy = 300 - 560, l2 = dx * dx + dy * dy;
+    let u = ((r.x - 180) * dx + (r.y - 560) * dy) / l2; u = Math.max(0, Math.min(1, u));
+    return Math.hypot(r.x - (180 + u * dx), r.y - (560 + u * dy));
+  }
+  const before = dSeg();
+  run(s, 30);
+  ok(dSeg() < before - 10, "now closing on the new tether: " + before + " -> " + dSeg());
+});
+test("raiders: with no tethers they fly straight at the station", function () {
+  const s = quiet(1, { sector: 3 });
+  s.params.scroll = 0; s.timers.flare = 1e9; s.timers.raid = 1e9;
+  s.mods.turretRangeAdd = -70;
+  const r = raider(s, { x: 180, y: 0 });
+  run(s, 60 * 20);
+  eq(s.raiders.length, 0);
+  eq(s.station.hp, 85);
+  near(r.x, 180, 1e-9);
+});
+test("raiders: cutting the ridden tether kills them (snap, +50); so do flare, offscreen and overstretch", function () {
+  const o = raidRig();
+  const s = o.s;
+  const r = raider(s, { x: 183, y: 405 });
+  s.mods.turretRangeAdd = -70;
+  run(s, 20);
+  eq(r.mode, "ride");
+  const score0 = s.score;
+  G.drainEvents(s);
+  ok(G.cutTether(s, o.tid).ok);
+  eq(s.raiders.length, 0);
+  eq(s.score, score0 + 50);
+  eq(s.stats.raidersKilled, 1);
+  const k = evsOf(s, "raider_killed");
+  eq(k.length, 1); eq(k[0].by, "snap"); eq(k[0].id, r.id);
+  // swipe
+  const p = raidRig();
+  raider(p.s, { x: 183, y: 405 }); p.s.mods.turretRangeAdd = -70;
+  run(p.s, 20);
+  G.cutAcross(p.s, 100, 480, 260, 480);
+  eq(p.s.raiders.length, 0);
+  // overstretch
+  const q = raidRig();
+  raider(q.s, { x: 183, y: 405 }); q.s.mods.turretRangeAdd = -70;
+  run(q.s, 20);
+  q.rock.y = -400;
+  run(q.s, 1);
+  eq(q.s.raiders.length, 0);
+  // offscreen
+  const f = raidRig();
+  raider(f.s, { x: 183, y: 405 }); f.s.mods.turretRangeAdd = -70;
+  run(f.s, 20);
+  f.rock.y = 700;
+  run(f.s, 1);
+  eq(f.s.raiders.length, 0);
+  // flare
+  const g = flareRig(3);
+  g.s.timers.raid = 1e9;
+  g.s.mods.turretRangeAdd = -70;
+  g.s.timers.flare = 0.02;
+  const rr = raider(g.s, { x: 183, y: 313 });
+  run(g.s, 3);
+  eq(g.s.raiders.length, 0, "flare cut the tether it rode");
+  ok(g.s.raiders.indexOf(rr) < 0);
+});
+test("raiders: a relay hands the rider on to the link; cutting the outer tether then spares it", function () {
+  const s = rich(quiet(1, { sector: 3 }));
+  s.params.scroll = 0; s.timers.flare = 1e9; s.timers.raid = 1e9;
+  s.mods.turretRangeAdd = -70;
+  const h = addRock(s, { x: 180, y: 420, amount: 0 });
+  s.tethers.push({ id: s.nextId++, from: 0, to: h.id, kind: "idle", len: 140, cost: 35, doomed: false, lastLaunch: -1000 });
+  h.tether = s.tethers[0].id;
+  G.makeRelay(s, h.id);
+  const out = addRock(s, { x: 180, y: 300 });
+  const outT = G.tryTether(s, h.id, out.id).id;
+  const link = h.tether;
+  const r = raider(s, { x: 182, y: 305 });
+  run(s, 2);
+  eq(r.mode, "ride"); eq(r.tether, outT);
+  near(r.d, 140 + 120 - 5, 6);
+  run(s, 60 * 5);
+  eq(r.tether, link, "now on the link tether");
+  ok(r.d < 140);
+  G.cutTether(s, outT);
+  eq(s.raiders.length, 1, "outer tether was already behind it");
+  G.cutTether(s, link);
+  eq(s.raiders.length, 0);
+});
+test("raiders: the turret beams the nearest raider in range and kills it (+50)", function () {
+  const s = quiet(1, { sector: 3 });
+  s.params.scroll = 0; s.timers.flare = 1e9; s.timers.raid = 1e9;
+  const far = raider(s, { x: 180, y: 300, hp: 30 });
+  const near1 = raider(s, { x: 180 + 60, y: 560, hp: 10 });
+  run(s, 1);
+  eq(s.station.beam, near1.id);
+  near(near1.hp, 10 - 12 * TICK, 1e-6);
+  eq(far.hp, 30);
+  const score0 = s.score;
+  run(s, 60 * 1);
+  eq(s.raiders.indexOf(near1), -1);
+  const k = evsOf(s, "raider_killed");
+  ok(k.some(function (e) { return e.id === near1.id && e.by === "turret"; }));
+  ok(s.score >= score0 + 50);
+  eq(s.stats.raidersKilled >= 1, true);
+});
+test("raiders: Point Defense widens the turret range and damage", function () {
+  const s = quiet(1, { sector: 3 });
+  s.params.scroll = 0; s.timers.flare = 1e9; s.timers.raid = 1e9;
+  s.mods = G.computeMods({ point_defense: 2 });
+  const r = raider(s, { x: 180, y: 560 - 115, hp: 100 });
+  run(s, 1);
+  eq(s.station.beam, r.id, "range 120");
+  near(r.hp, 100 - 24 * TICK, 1e-6);
+});
+test("live wire: riding raiders take zapDps and die by zap; walkers do not", function () {
+  const o = raidRig();
+  const s = o.s;
+  s.mods = G.computeMods({ live_wire: 2 });
+  s.mods.turretRangeAdd = -70;
+  const walker = raider(s, { x: 20, y: 20, hp: 30 });
+  const rider = raider(s, { x: 183, y: 405, hp: 30 });
+  run(s, 2);
+  eq(rider.mode, "ride");
+  const hp1 = rider.hp;
+  run(s, 30);
+  near(hp1 - rider.hp, 20 * 30 * TICK, 1e-6);
+  eq(walker.hp, 30);
+  G.drainEvents(s);
+  run(s, 60);
+  eq(s.raiders.indexOf(rider), -1);
+  const k = evsOf(s, "raider_killed");
+  ok(k.some(function (e) { return e.id === rider.id && e.by === "zap"; }));
+  eq(s.station.hp, 100);
+});
 // ---- run over
+
+test("run over: station HP <= 0 ends the run once with a single run_over event", function () {
+  const s = quiet(1, { sector: 3 });
+  s.params.scroll = 0; s.timers.flare = 1e9; s.timers.raid = 1e9;
+  s.mods.turretRangeAdd = -70;
+  s.station.hp = 10;
+  s.score = 1234;
+  raider(s, { x: 180, y: 540 });
+  G.drainEvents(s);
+  run(s, 5);
+  eq(s.phase, "over");
+  eq(s.station.hp, 0);
+  eq(s.over, { reason: "destroyed", score: 1234, sector: 3, starsRun: 0 });
+  const t = s.tick;
+  run(s, 30);
+  eq(s.tick, t);
+  const ev = G.drainEvents(s);
+  eq(ev.filter(function (e) { return e.type === "run_over"; }), [{ type: "run_over", reason: "destroyed", score: 1234, sector: 3, starsRun: 0 }]);
+  eq(G.abandonRun(s).reason, "bad_phase");
+  eq(G.tryTether(s, 0, 1).reason, "bad_phase");
+});
+test("run over: abandonRun from play, warp and cards; a destroyed run cannot be abandoned", function () {
+  const a = G.newRun(1);
+  ok(G.abandonRun(a).ok); eq(a.over.reason, "abandoned");
+  const w = G.newRun(1); w.phase = "warp"; w.phaseT = 1;
+  ok(G.abandonRun(w).ok); eq(w.phase, "over");
+  const c = offerAt(1, 1);
+  ok(G.abandonRun(c).ok); eq(c.phase, "over"); eq(c.over.sector, 1);
+});
 
 test("abandonRun: ends the run once, step becomes a no-op", function () {
   const s = G.newRun(2);
@@ -973,12 +1309,75 @@ test("determinism: save at tick 1000, load, continue gives the same hash", funct
   play(a, 3600);
   play(b, 1000);
   const text = G.serializeRun(b);
-  ok(text.indexOf("\"events\"") < 0, "events stripped");
+  ok(!("events" in JSON.parse(text)), "events stripped");
   const l = G.loadRun(text);
   ok(l.ok);
   eq(G.hashState(l.state), G.hashState(b));
   play(l.state, 2600);
   eq(G.hashState(l.state), G.hashState(a));
+});
+// A longer script that also tops the gauge up (so a warp happens), picks the first offered card,
+// taps husks into relays and cuts across the field, in a sector with flares and raiders.
+function script2(s) {
+  const t = s.tick;
+  if (s.phase === "cards") { G.pickCard(s, s.offer[0]); return; }
+  if (s.phase !== "play") return;
+  if (t === 1500) s.gauge = s.params.gaugeMax - 2;      // a direct nudge: identical in every run of the script
+  if (t % 45 === 0) {
+    for (let i = 0; i < s.rocks.length; i++) {
+      if (G.tryTether(s, 0, s.rocks[i].id).ok) break;
+      if (s.rocks[i].relay && G.powered(s, s.rocks[i].id)) {
+        for (let j = 0; j < s.rocks.length; j++) if (G.tryTether(s, s.rocks[i].id, s.rocks[j].id).ok) break;
+      }
+    }
+  }
+  if (t % 60 === 30) {
+    for (let i = 0; i < s.rocks.length; i++) if (s.rocks[i].depleted && s.rocks[i].tether) { G.makeRelay(s, s.rocks[i].id); break; }
+  }
+  if (t % 400 === 250) G.cutAcross(s, 0, 300 + (t % 7) * 10, 360, 450);
+}
+function play2(s, n) { for (let i = 0; i < n; i++) { script2(s); G.step(s); } }
+
+test("determinism: a run with warp, a card pick, relays, flares and raiders replays to the same hash", function () {
+  const a = G.newRun(31337, { sector: 3 }), b = G.newRun(31337, { sector: 3 }), c = G.newRun(31338, { sector: 3 });
+  play2(a, 5400); play2(b, 5400); play2(c, 5400);
+  eq(G.hashState(a), G.hashState(b));
+  ok(G.hashState(a) !== G.hashState(c));
+  ok(a.sector > 3, "the script warped (sector " + a.sector + ")");
+  ok(a.stats.cardsPicked >= 1, "a card was picked");
+  ok(a.stats.flaresSurvived >= 1, "a flare struck");
+  ok(a.stats.relaysMade >= 1, "a relay was made");
+  ok(a.rng.cards !== G.newRun(31337).rng.cards, "the cards stream was used");
+  ok(a.rng.events !== G.newRun(31337).rng.events, "the events stream was used");
+});
+test("determinism: save and load across a warp and a card pick continues identically", function () {
+  const a = G.newRun(555, { sector: 3 }), b = G.newRun(555, { sector: 3 });
+  play2(a, 5400);
+  play2(b, 2700);
+  const l = G.loadRun(G.serializeRun(b));
+  ok(l.ok);
+  eq(G.hashState(l.state), G.hashState(b));
+  play2(l.state, 2700);
+  eq(G.hashState(l.state), G.hashState(a));
+  const cards = G.newRun(9, { sector: 3 });
+  cards.gauge = cards.params.gaugeMax; cards.phase = "warp"; cards.phaseT = TICK;
+  run(cards, 2);
+  eq(cards.phase, "cards");
+  const l2 = G.loadRun(G.serializeRun(cards));
+  ok(l2.ok);
+  eq(l2.state.offer, cards.offer);
+  G.pickCard(cards, cards.offer[1]); G.pickCard(l2.state, l2.state.offer[1]);
+  play2(cards, 600); play2(l2.state, 600);
+  eq(G.hashState(l2.state), G.hashState(cards));
+});
+test("save: all three rng streams survive serialization (rng.events is not an event queue)", function () {
+  const s = G.newRun(3, { sector: 3 });
+  run(s, 200);
+  const o = JSON.parse(G.serializeRun(s));
+  eq(o.rng, s.rng);
+  ok(!("events" in o), "top-level event queue is stripped");
+  delete o.rng.events;
+  eq(G.loadRun(JSON.stringify(o)).reason, "shape");
 });
 test("save: loadRun reasons", function () {
   eq(G.loadRun("{nope").reason, "parse");

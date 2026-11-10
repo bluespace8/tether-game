@@ -25,6 +25,7 @@ var TetherRender = (function () {
   var arcs = [];
   var banner = null;     // { text, t0 } big sector title
   var curState = null;
+  var flashAt = 0, hitAt = 0;   // performance times of the last flare strike and station hit
   var warpAt = 0;        // performance time when the warp started, 0 = not warping
 
   function init(c) {
@@ -103,6 +104,16 @@ var TetherRender = (function () {
       } else if (e.type === "drone_split" && state) {
         for (var q = 0; q < state.drones.length; q++) if (state.drones[q].id === e.droneId) addBurst(state.drones[q].x, state.drones[q].y, "#ffffff", 5);
       } else if (e.type === "gauge_full") warpAt = performance.now();
+      else if (e.type === "flare") flashAt = performance.now();
+      else if (e.type === "station_hit") {
+        hitAt = performance.now();
+        addFloat(180, 520, "-" + Math.round(e.damage) + " hull", COL.bad, 1.2);
+      } else if (e.type === "raider_killed") {
+        addBurst(e.x, e.y, e.by === "zap" ? "#ffe36b" : COL.bad, 10);
+        addFloat(e.x, e.y - 14, "+50", COL.warn, 1);
+      } else if (e.type === "raider_latched" && state) {
+        for (var z = 0; z < state.raiders.length; z++) if (state.raiders[z].id === e.id) addBurst(state.raiders[z].x, state.raiders[z].y, COL.bad, 6);
+      }
     }
   }
 
@@ -209,7 +220,9 @@ var TetherRender = (function () {
   function drawField(state, ui, now) {
     curState = state;
     var d = view.dpr, k = view.scale;
-    ctx.setTransform(d * k, 0, 0, d * k, d * view.offX, d * view.offY);
+    var shx = 0, shy = 0, sa = (now - hitAt) / 1000;
+    if (hitAt && sa < 0.3) { shx = Math.sin(now * 0.09) * 4 * (1 - sa / 0.3); shy = Math.cos(now * 0.13) * 3 * (1 - sa / 0.3); }
+    ctx.setTransform(d * k, 0, 0, d * k, d * (view.offX + shx), d * (view.offY + shy));
     // field frame
     ctx.strokeStyle = "rgba(120,160,220,0.12)";
     ctx.lineWidth = 1;
@@ -234,6 +247,11 @@ var TetherRender = (function () {
       ctx.strokeStyle = t.kind === "idle" ? "#7a8794" : t.kind === "link" ? "#bff4ff" : (brown ? "#5c93a6" : COL.tether);
       ctx.lineWidth = 1.1;
       ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
+      if (t.doomed) {
+        ctx.strokeStyle = "rgba(255,60,60," + (0.5 + 0.5 * Math.sin(now / 90)) + ")";
+        ctx.lineWidth = 3.4;
+        ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
+      }
     }
 
     for (i = 0; i < arcs.length; i++) {
@@ -254,6 +272,8 @@ var TetherRender = (function () {
       ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.arc(dr.x, dr.y, 3, 0, 6.2832); ctx.fill(); ctx.stroke();
     }
+
+    drawRaiders(state, now);
 
     // station
     var st = state.station;
@@ -294,6 +314,62 @@ var TetherRender = (function () {
 
     ctx.restore();
     drawGesture(state, ui);
+  }
+
+  function drawRaiders(state, now) {
+    var i, rd, st = state.station;
+    if (state.raiders.length) {
+      var range = T.station.turret.range + state.mods.turretRangeAdd;
+      if (range > 0) {
+        ctx.strokeStyle = "rgba(255,209,102,0.16)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath(); ctx.arc(st.x, st.y, range, 0, 6.2832); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    for (i = 0; i < state.raiders.length; i++) {
+      rd = state.raiders[i];
+      if (rd.mode === "warn") {
+        // red marker at the top edge, blinking faster as it closes in
+        var blink = Math.floor(now / (rd.t < 1 ? 90 : 180)) % 2 === 0;
+        ctx.fillStyle = blink ? COL.bad : "rgba(255,90,90,0.45)";
+        ctx.beginPath(); ctx.moveTo(rd.x, 22); ctx.lineTo(rd.x - 9, 5); ctx.lineTo(rd.x + 9, 5); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "#05070d";
+        ctx.font = "bold 11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("!", rd.x, 18);
+        continue;
+      }
+      ctx.fillStyle = rd.mode === "ride" ? "#ff7a45" : COL.bad;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(rd.x, rd.y + 10); ctx.lineTo(rd.x - 9, rd.y - 7); ctx.lineTo(rd.x, rd.y - 3); ctx.lineTo(rd.x + 9, rd.y - 7); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      if (rd.hp < rd.hpMax) {
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(rd.x - 9, rd.y - 16, 18, 3);
+        ctx.fillStyle = COL.ok; ctx.fillRect(rd.x - 9, rd.y - 16, 18 * Math.max(0, rd.hp / rd.hpMax), 3);
+      }
+      // Live Wire sparks (ruling W7): drawn from mods.zapDps and a riding raider, no event
+      if (rd.mode === "ride" && state.mods.zapDps > 0) {
+        ctx.strokeStyle = "#ffe36b";
+        ctx.lineWidth = 1.4;
+        for (var s = 0; s < 4; s++) {
+          var ph = now * 0.02 + s * 1.7 + rd.id;
+          var ax = rd.x + Math.sin(ph) * 11, ay = rd.y + Math.cos(ph * 1.3) * 11;
+          ctx.beginPath(); ctx.moveTo(rd.x, rd.y); ctx.lineTo((rd.x + ax) / 2 + Math.cos(ph * 3) * 3, (rd.y + ay) / 2 + Math.sin(ph * 3) * 3); ctx.lineTo(ax, ay); ctx.stroke();
+        }
+      }
+    }
+    if (st.beam) {
+      for (i = 0; i < state.raiders.length; i++) {
+        if (state.raiders[i].id !== st.beam) continue;
+        rd = state.raiders[i];
+        ctx.strokeStyle = "rgba(255,226,120," + (0.65 + 0.3 * Math.sin(now / 40)) + ")";
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(st.x, st.y); ctx.lineTo(rd.x, rd.y); ctx.stroke();
+      }
+    }
   }
 
   function drawGesture(state, ui) {
@@ -351,34 +427,39 @@ var TetherRender = (function () {
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     var x = view.hudX + 10, w = view.hudW - 20, y = view.hudY;
     ctx.textBaseline = "alphabetic";
+    // row 1: the pause button is a DOM element at the left; sector centred, score right
     ctx.font = "bold 15px system-ui, sans-serif";
     ctx.fillStyle = COL.text;
-    ctx.textAlign = "left";
-    ctx.fillText("SECTOR " + state.sector, x, y + 24);
+    ctx.textAlign = "center";
+    ctx.fillText("SECTOR " + state.sector, view.hudX + view.hudW / 2, y + 28);
     ctx.textAlign = "right";
-    ctx.fillText(String(state.score).replace(/\B(?=(\d{3})+(?!\d))/g, ","), x + w, y + 24);
+    ctx.fillText(String(state.score).replace(/\B(?=(\d{3})+(?!\d))/g, ","), x + w, y + 28);
 
-    var pct = state.gauge / state.params.gaugeMax;
-    ctx.font = "bold 11px system-ui, sans-serif";
+    // row 2: warp gauge, full width
+    var pct = Math.min(1, state.gauge / state.params.gaugeMax);
+    var full = pct >= 0.999;
+    bar(x, y + 46, w - 44, 11, pct, full ? "#c9bfff" : "#7c6cff");
+    ctx.font = "bold 10px system-ui, sans-serif";
     ctx.textAlign = "left";
-    ctx.fillStyle = COL.dim;
-    ctx.fillText("WARP", x, y + 47);
-    bar(x + 38, y + 38, w - 38 - 40, 10, pct, "#7c6cff");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText("WARP", x + 4, y + 55);
+    ctx.font = "bold 11px system-ui, sans-serif";
     ctx.textAlign = "right";
     ctx.fillStyle = COL.text;
-    ctx.fillText(Math.floor(pct * 100) + "%", x + w, y + 47);
+    ctx.fillText(Math.floor(pct * 100) + "%", x + w, y + 56);
 
+    // row 3: hull bar left, power right
     ctx.textAlign = "left";
     ctx.fillStyle = COL.dim;
-    ctx.fillText("HULL", x, y + 71);
+    ctx.fillText("HULL", x, y + 80);
     var hf = state.station.hp / state.station.hpMax;
-    bar(x + 38, y + 62, w * 0.36, 10, hf, hf > 0.3 ? COL.ok : COL.bad);
+    bar(x + 36, y + 71, w * 0.34, 10, hf, hf > 0.3 ? COL.ok : COL.bad);
     var flash = state.power.brownout && Math.floor(now / 250) % 2 === 0;
     ctx.textAlign = "right";
     ctx.fillStyle = state.power.brownout ? (flash ? COL.bad : COL.warn) : COL.text;
-    ctx.fillText("POWER " + Math.round(state.power.use) + "/" + Math.round(state.power.budget), x + w, y + 71);
-    var pf = state.power.use / state.power.budget;
-    bar(x + w * 0.5, y + 62, w * 0.5 - 100, 10, pf, state.power.brownout ? COL.bad : COL.tether);
+    ctx.fillText("POWER " + Math.round(state.power.use) + "/" + Math.round(state.power.budget), x + w, y + 80);
+    var pf = Math.min(1, state.power.use / state.power.budget);
+    bar(x + w * 0.5, y + 71, w * 0.5 - 100, 10, pf, state.power.brownout ? COL.bad : COL.tether);
   }
 
   function drawOverlays(state, now) {
@@ -401,6 +482,27 @@ var TetherRender = (function () {
       ctx.textAlign = "center";
       ctx.fillStyle = COL.text;
       ctx.fillText("WARP", cx, cy);
+    }
+    if (state.phase === "play" && state.timers.flareWarn > 0) {
+      var pw = 0.25 + 0.2 * Math.sin(now / 120);
+      var fw = T.world.w * view.scale, fh = T.world.h * view.scale, edge = 26 * view.scale;
+      ctx.fillStyle = "rgba(255,150,40," + pw + ")";
+      ctx.fillRect(view.offX, view.offY, edge, fh);
+      ctx.fillRect(view.offX + fw - edge, view.offY, edge, fh);
+      ctx.fillRect(view.offX, view.offY, fw, edge);
+      ctx.fillRect(view.offX, view.offY + fh - edge, fw, edge);
+      ctx.font = "bold 16px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ffd28a";
+      ctx.fillText("SOLAR FLARE IN " + state.timers.flareWarn.toFixed(1), cx, view.offY + 52 * view.scale);
+    }
+    if (flashAt && now - flashAt < 450) {
+      ctx.fillStyle = "rgba(255,255,255," + (0.65 * (1 - (now - flashAt) / 450)) + ")";
+      ctx.fillRect(0, 0, view.cssW, view.cssH);
+    }
+    if (hitAt && now - hitAt < 350) {
+      ctx.fillStyle = "rgba(255,40,40," + (0.28 * (1 - (now - hitAt) / 350)) + ")";
+      ctx.fillRect(0, 0, view.cssW, view.cssH);
     }
     if (banner) {
       var age = (now - banner.t0) / 1000;

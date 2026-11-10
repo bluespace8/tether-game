@@ -11,16 +11,32 @@
   }
 
   var state = null;
+  var paused = false;
   var firstRun = true;
+
   function newGame() {
     var seed = firstRun ? intParam("seed") : null;     // ?seed fixes the first run only
     if (seed === null) seed = Date.now() >>> 0;
     firstRun = false;
     var sector = intParam("sector");
     state = G.newRun(seed, sector !== null && sector >= 1 ? { sector: sector } : {});
+    paused = false;
     TetherInput.reset();
     TetherUI.hideCards();
+    TetherUI.hidePause();
+    TetherUI.hideOver();
     TetherRender.setBanner("SECTOR " + state.sector, performance.now());
+  }
+
+  function pause() {
+    if (paused || (state.phase !== "play" && state.phase !== "warp")) return;
+    paused = true;
+    TetherInput.reset();
+    TetherUI.showPause();
+  }
+  function resume() {
+    paused = false;
+    TetherUI.hidePause();
   }
 
   var canvas = document.getElementById("game");
@@ -29,14 +45,20 @@
   TetherUI.init({
     onPick: function (id) {
       if (G.pickCard(state, id).ok) { TetherUI.hideCards(); pump(); draw(); }
-    }
+    },
+    onPause: pause,
+    onResume: resume,
+    onRestart: function () { newGame(); draw(); },
+    onQuit: function () { G.abandonRun(state); resume(); pump(); draw(); },
+    onPlayAgain: function () { newGame(); draw(); }
   });
   newGame();
+  TetherUI.layout(TetherRender.view);
 
   var resizeTimer = 0;
   function onResize() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { TetherRender.resize(); draw(); }, 100);
+    resizeTimer = setTimeout(function () { TetherRender.resize(); TetherUI.layout(TetherRender.view); draw(); }, 100);
   }
   window.addEventListener("resize", onResize);
   window.addEventListener("orientationchange", onResize);
@@ -52,6 +74,7 @@
       var e = events[i];
       if (e.type === "cards_offered") { TetherInput.reset(); TetherUI.showCards(state); }
       else if (e.type === "sector_start") TetherRender.setBanner("SECTOR " + e.sector, performance.now());
+      else if (e.type === "run_over") { TetherInput.reset(); TetherUI.showOver(state); }
     }
   }
 
@@ -60,7 +83,7 @@
     requestAnimationFrame(frame);
     var dt = last ? Math.min(0.25, (now - last) / 1000) : 0;
     last = now;
-    var live = state.phase === "play" || state.phase === "warp";
+    var live = !paused && (state.phase === "play" || state.phase === "warp");
     if (live) acc += dt; else acc = 0;
     var steps = 0;
     while (live && acc >= G.TICK && steps < 5) {
@@ -83,8 +106,12 @@
   }
   requestAnimationFrame(frame);
 
-  // A returning player does not lose time to a long frame.
-  document.addEventListener("visibilitychange", function () { last = 0; acc = 0; });
+  // Leaving the page pauses the run, and a returning player does not lose time to a long frame.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) pause();
+    last = 0; acc = 0;
+  });
+  window.addEventListener("blur", pause);
 
   // Debug hook for headless checks.
   window.__tetherState = function () { return state; };

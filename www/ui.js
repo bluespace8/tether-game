@@ -17,6 +17,14 @@ var TetherUI = (function () {
     el.cardsList = $("cards-list");
     el.cardsHint = $("cards-hint");
     el.take = $("cards-take");
+    el.pauseBtn = $("btn-pause");
+    el.pause = $("screen-pause");
+    el.over = $("screen-over");
+    el.pauseBtn.addEventListener("click", function () { cb.onPause(); });
+    $("pause-resume").addEventListener("click", function () { cb.onResume(); });
+    $("pause-restart").addEventListener("click", function () { cb.onRestart(); });
+    $("pause-quit").addEventListener("click", function () { cb.onQuit(); });
+    $("over-again").addEventListener("click", function () { cb.onPlayAgain(); });
     el.take.addEventListener("click", function () {
       if (selected && performance.now() - shownAt >= LOCK_MS) cb.onPick(selected);
     });
@@ -54,6 +62,7 @@ var TetherUI = (function () {
     el.take.disabled = true;
     el.cardsHint.textContent = "Tap a card to select it";
     el.cards.hidden = false;
+    el.pauseBtn.hidden = true;
     setTimeout(function () {
       var bs = el.cardsList.children;
       for (var i = 0; i < bs.length; i++) bs[i].classList.remove("locked");
@@ -70,7 +79,33 @@ var TetherUI = (function () {
     el.cardsHint.textContent = "Tap again or press Take";
   }
 
-  function hideCards() { el.cards.hidden = true; selected = null; }
+  function hideCards() { el.cards.hidden = true; el.pauseBtn.hidden = false; selected = null; }
 
-  return { init: init, showCards: showCards, hideCards: hideCards };
+  function showPause() { el.pause.hidden = false; }
+  function hidePause() { el.pause.hidden = true; }
+
+  function fmt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+
+  function showOver(state) {
+    var o = state.over, s = state.stats;
+    $("over-title").textContent = o.reason === "destroyed" ? "STATION DESTROYED" : "RUN ENDED";
+    $("over-score").textContent = fmt(o.score);
+    $("over-sector").textContent = "Reached sector " + o.sector;
+    $("over-delivered").textContent = "Delivered  ore " + fmt(s.delivered.ore) + "  ice " + fmt(s.delivered.ice) + "  crystal " + fmt(s.delivered.crystal);
+    $("over-extra").textContent = "Raiders " + s.raidersKilled + "   Relays " + s.relaysMade + "   Cards " + s.cardsPicked + "   Flares " + s.flaresSurvived;
+    hideCards();
+    hidePause();
+    el.pauseBtn.hidden = true;
+    el.over.hidden = false;
+  }
+  function hideOver() { el.over.hidden = true; el.pauseBtn.hidden = false; }
+
+  // The pause button sits in the top-left of the HUD band (CSS px).
+  function layout(view) {
+    el.pauseBtn.style.left = Math.round(view.hudX + 2) + "px";
+    el.pauseBtn.style.top = Math.round(view.hudY + 2) + "px";
+  }
+
+  return { init: init, showCards: showCards, hideCards: hideCards, showPause: showPause, hidePause: hidePause,
+           showOver: showOver, hideOver: hideOver, layout: layout };
 })();
