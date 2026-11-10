@@ -274,6 +274,7 @@ const CARDS = [
 - Base mods: `{ droneAdd:0, droneSpeedMul:1, capAdd:0, powerAdd:0, costMul:1, relayCostMul:1, maxLenAdd:0,
   severAdd:0, splitShare:0, zapDps:0, chainRange:0, turretRangeAdd:0, turretDpsAdd:0, hullAdd:0,
   iceRepair:0.5, flareBlocks:0, noOverstretch:0 }`.
+- Optional `stackFx`: an array with one `fx` list per stack. Stack n applies `stackFx[min(n-1, last)]` instead of `fx` (Crystal Chain: +90 range, then +40 per further stack). Cards without it repeat `fx` each stack.
 - Cards with an immediate effect (heal) carry `now: [["heal", n]]`, applied on pick.
 - Drone count change takes effect at once: new drones are added idle at the station.
 
@@ -1023,13 +1024,13 @@ with the shapes in 5.1. Tester and reviewer run after each pair.
 | Rules | flares (warning, doomed, sever), raiders (warn, approach, latch, ride, snap kill, ram), turret, station HP, run over, `abandonRun`, raider/flare score |
 | Front end | flare glow/flash/tint, raid markers, raiders, turret beam, HP bar, station hit feedback, pause sheet, run over screen (9.3) |
 | Contract | events `flare_warning`, `flare`, `raid_warning`, `raider_spawn`, `raider_latched`, `raider_killed`, `station_hit`, `run_over`; `state.over` |
-| Accept | hazard tests pass; a full run ends in destruction in about 3-5 minutes for a casual tester (a guide, section 14 question 6); `?sector=3` shows raiders at once |
+| Accept | hazard tests pass; a full run ends in destruction in about 3-5 minutes for a casual tester (a guide, section 14 question 6); `?sector=3` shows the first raid warning within about 15 s |
 
 ### M4. Full card set, stars, saves
 
 | | |
 |---|---|
-| Rules | remaining 7 cards (rares, epics, special mechanics), star rocks and stars, profile functions, `serializeRun`/`loadRun`, `bankRun` |
+| Rules | remaining 7 cards (rares, epics, special mechanics), star rocks and stars, profile functions, `bankRun`. (`serializeRun` and `loadRun`, rules only, were brought forward from M4 into the prototype.) |
 | Front end | storage.js (keys, damaged copies, quota), autosave timing, resume/abandon on home, home screen, best score, card rarity styling, split shard and chain effects |
 | Contract | 5.2, 5.3, 6.5; events `drone_split`, `crystal_chain`, `flare_blocked`, `star_collected` |
 | Accept | save round-trip tests; killing the tab mid-run and reopening resumes the same tick-state; stars bank exactly once |
