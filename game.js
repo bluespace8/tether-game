@@ -472,6 +472,9 @@
       if (d.tether === id) resetDrone(state, d);
     }
     emit(state, { type: "tether_cut", id: id, reason: reason, x: mx, y: my });
+    // Ruling W2: any removal of the ridden tether kills the raider.
+    const riders = state.raiders.filter(function (rd) { return rd.mode === "ride" && rd.tether === id; });
+    for (let i = 0; i < riders.length; i++) killRaider(state, riders[i], "snap");
     const cut = [id];
     if (rock && rock.relay) {
       const down = [];
@@ -767,6 +770,168 @@
     }
   }
 
+  // ---------------------------------------------------------------- hazards
+
+  function killRaider(state, rd, by) {
+    const i = state.raiders.indexOf(rd);
+    if (i < 0) return;
+    state.raiders.splice(i, 1);
+    state.score += T.score.raider;
+    state.stats.raidersKilled++;
+    if (state.station.beam === rd.id) state.station.beam = 0;
+    emit(state, { type: "raider_killed", id: rd.id, by: by, x: rd.x, y: rd.y });
+  }
+
+  function stepFlares(state) {
+    const p = state.params, F = T.flare, tm = state.timers;
+    if (p.flareGap <= 0) return;
+    tm.flare -= TICK;
+    const sever = p.severLen + state.mods.severAdd;
+    if (tm.flare > 1e-9) {
+      if (tm.flare <= F.warn + 1e-9) {
+        const first = tm.flareWarn === 0;
+        tm.flareWarn = tm.flare;
+        const doomed = [];
+        for (let i = 0; i < state.tethers.length; i++) {
+          const t = state.tethers[i];
+          t.doomed = t.len > sever;
+          if (t.doomed) doomed.push(t.id);
+        }
+        if (first) emit(state, { type: "flare_warning", in: F.warn, doomed: doomed });
+      }
+      return;
+    }
+    // strike
+    const ids = [];
+    for (let i = 0; i < state.tethers.length; i++) if (state.tethers[i].len > sever) ids.push(state.tethers[i].id);
+    if (state.flare.blocksLeft > 0) {
+      state.flare.blocksLeft--;
+      emit(state, { type: "flare_blocked", blocksLeft: state.flare.blocksLeft });
+    } else {
+      const cut = [];
+      for (let i = 0; i < ids.length; i++) {
+        if (!getTether(state, ids[i])) continue;
+        const c = removeTether(state, ids[i], "flare");
+        for (let j = 0; j < c.length; j++) cut.push(c[j]);
+      }
+      computePower(state);
+      emit(state, { type: "flare", cut: cut });
+    }
+    state.stats.flaresSurvived++;
+    tm.flareWarn = 0;
+    tm.flare = jittered(state, "events", p.flareGap, F.jitter);
+    for (let i = 0; i < state.tethers.length; i++) state.tethers[i].doomed = false;
+  }
+
+  function stepWaves(state) {
+    const p = state.params, R = T.raiders;
+    if (p.raidGap <= 0) return;
+    state.timers.raid -= TICK;
+    if (state.timers.raid > 1e-9) return;
+    state.timers.raid += jittered(state, "events", p.raidGap, R.jitter);
+    if (state.timers.raid <= 0) state.timers.raid = TICK;
+    const xs = [];
+    for (let i = 0; i < p.raidCount; i++) {
+      if (state.raiders.length >= R.max) break;
+      const x = R.xMin + rnd(state, "events") * (R.xMax - R.xMin);
+      state.raiders.push({ id: state.nextId++, x: x, y: 0, hp: p.raiderHp, hpMax: p.raiderHp, mode: "warn",
+                           tether: 0, d: 0, t: R.warn });
+      xs.push(x);
+    }
+    if (xs.length) emit(state, { type: "raid_warning", xs: xs, in: R.warn });
+  }
+
+  function moveToward(rd, tx, ty, step) {
+    const dd = dist(rd.x, rd.y, tx, ty);
+    if (dd <= step) { rd.x = tx; rd.y = ty; return; }
+    rd.x += (tx - rd.x) / dd * step;
+    rd.y += (ty - rd.y) / dd * step;
+  }
+
+  function stepRaiders(state) {
+    const R = T.raiders, p = state.params, st = state.station;
+    // warn countdown -> approach
+    for (let i = 0; i < state.raiders.length; i++) {
+      const rd = state.raiders[i];
+      if (rd.mode !== "warn") continue;
+      rd.t -= TICK;
+      if (rd.t <= 1e-9) {
+        rd.t = 0; rd.mode = "approach";
+        emit(state, { type: "raider_spawn", id: rd.id, x: rd.x, y: rd.y });
+      }
+    }
+    // Live Wire (riders) then the turret (nearest raider in range)
+    if (state.mods.zapDps > 0) {
+      const list = state.raiders.slice();
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].mode !== "ride") continue;
+        list[i].hp -= state.mods.zapDps * TICK;
+        if (list[i].hp <= 1e-9) killRaider(state, list[i], "zap");
+      }
+    }
+    const range = T.station.turret.range + state.mods.turretRangeAdd;
+    let target = null, targetD = Infinity;
+    for (let i = 0; i < state.raiders.length; i++) {
+      const rd = state.raiders[i];
+      if (rd.mode === "warn") continue;
+      const d = dist(rd.x, rd.y, st.x, st.y);
+      if (d <= range && d < targetD) { target = rd; targetD = d; }
+    }
+    st.beam = target ? target.id : 0;
+    if (target) {
+      target.hp -= (T.station.turret.dps + state.mods.turretDpsAdd) * TICK;
+      if (target.hp <= 1e-9) killRaider(state, target, "turret");
+    }
+    // movement
+    const list = state.raiders.slice();
+    for (let i = 0; i < list.length; i++) {
+      const rd = list[i];
+      if (state.raiders.indexOf(rd) < 0 || rd.mode === "warn") continue;
+      if (rd.mode === "approach") {
+        let best = null, bestId = 0, bestD = Infinity, bestT = null;
+        for (let j = 0; j < state.tethers.length; j++) {
+          const t = state.tethers[j];
+          const e = tetherEnds(state, t.id);
+          if (!e) continue;
+          const c = closestOnSeg(rd.x, rd.y, e.x1, e.y1, e.x2, e.y2);
+          if (c.d < bestD) { bestD = c.d; best = c; bestId = t.id; bestT = t; }
+        }
+        if (best && bestD <= R.latch) {
+          const ch = chainOf(state, bestId);
+          let before = 0;
+          for (let j = 0; j < ch.length - 1; j++) before += ch[j].len;
+          rd.mode = "ride"; rd.tether = bestId; rd.d = before + best.u * bestT.len;
+          rd.x = best.x; rd.y = best.y;
+          emit(state, { type: "raider_latched", id: rd.id, tether: bestId });
+        } else if (best) {
+          moveToward(rd, best.x, best.y, R.approach * TICK);
+        } else {
+          moveToward(rd, st.x, st.y, R.approach * TICK);
+        }
+      } else if (rd.mode === "ride") {
+        const ch = chainOf(state, rd.tether);
+        if (!ch.length) { killRaider(state, rd, "snap"); continue; }
+        let total = 0;
+        for (let j = 0; j < ch.length; j++) total += ch[j].len;
+        rd.d = Math.max(0, Math.min(total, rd.d) - p.rideSpeed * TICK);
+        // crossing a relay hands the raider on to the link it came from
+        let k = ch.length - 1, start = total - ch[k].len;
+        while (k > 0 && rd.d < start) { k--; start -= ch[k].len; }
+        rd.tether = ch[k].id;
+        const pos = pointAlong(state, rd.tether, rd.d);
+        rd.x = pos.x; rd.y = pos.y;
+      }
+      if (dist(rd.x, rd.y, st.x, st.y) <= st.r) {
+        const i2 = state.raiders.indexOf(rd);
+        if (i2 >= 0) state.raiders.splice(i2, 1);
+        if (state.station.beam === rd.id) state.station.beam = 0;
+        st.hp = Math.max(0, st.hp - p.ramDmg);
+        emit(state, { type: "station_hit", damage: p.ramDmg, hp: st.hp, hpMax: st.hpMax });
+        if (st.hp <= 0) break;
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- simulation
 
   function updateTethers(state) {
@@ -955,7 +1120,11 @@
       emit(state, { type: "brownout", on: bo });
     }
     stepSpawn(state);
+    stepFlares(state);
+    stepWaves(state);
+    stepRaiders(state);
     stepDrones(state);
+    if (state.station.hp <= 0) endRun(state, "destroyed");
   }
 
   function drainEvents(state) {
@@ -967,7 +1136,8 @@
   // ---------------------------------------------------------------- save and hash
 
   function serializeRun(state) {
-    return JSON.stringify(state, function (k, v) { return k === "events" ? undefined : v; });
+    // Strip only the top-level event queue: rng.events is a stream state and must be saved.
+    return JSON.stringify(state, function (k, v) { return (k === "events" && this === state) ? undefined : v; });
   }
 
   function loadRun(text) {
@@ -977,7 +1147,7 @@
     const arrays = ["rocks", "tethers", "drones", "raiders", "offer"];
     for (let i = 0; i < arrays.length; i++) if (!Array.isArray(o[arrays[i]])) return { ok: false, reason: "shape", state: null };
     const phases = ["play", "warp", "cards", "over"];
-    if (phases.indexOf(o.phase) < 0 || !o.rng || !o.station || !o.power || !o.timers || !o.stats || !o.cards ||
+    if (phases.indexOf(o.phase) < 0 || !o.rng || typeof o.rng.field !== "number" || typeof o.rng.events !== "number" || typeof o.rng.cards !== "number" || !o.station || !o.power || !o.timers || !o.stats || !o.cards ||
         typeof o.tick !== "number" || typeof o.sector !== "number" || typeof o.gauge !== "number" ||
         typeof o.score !== "number" || typeof o.nextId !== "number") return { ok: false, reason: "shape", state: null };
     o.events = [];
