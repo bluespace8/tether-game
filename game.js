@@ -1078,6 +1078,8 @@
       if (d.mode === "mine") {
         if (rock.depleted || rock.amount <= 0) d.mode = "back";
         else {
+          // A hold keeps its cargo type until empty: if the rock changed type, head home with what is aboard.
+          if (d.cargo > 1e-9 && d.cargoType !== rock.type) { d.mode = "back"; continue; }
           const take = Math.min(T.drones.rate * TICK, cap - d.cargo, rock.amount);
           d.cargo += take;
           d.cargoType = rock.type;
@@ -1123,8 +1125,9 @@
     stepFlares(state);
     stepWaves(state);
     stepRaiders(state);
+    // A destroyed station ends the run before drones unload, so an ice repair this tick cannot revive it.
+    if (state.station.hp <= 0) { endRun(state, "destroyed"); return; }
     stepDrones(state);
-    if (state.station.hp <= 0) endRun(state, "destroyed");
   }
 
   function drainEvents(state) {
