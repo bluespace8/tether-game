@@ -1409,5 +1409,43 @@ test("drainEvents: empties the queue and caps at 128", function () {
   ok(ev.length > 0 && s2.events.length === 0);
 });
 
+test("step: a ram and an ice unload in the same tick end the run", function () {
+  const s = rich(quiet(1, { sector: 3 }));
+  s.params.scroll = 0;
+  s.timers.flare = 1e9; s.timers.raid = 1e9;
+  s.mods.iceRepair = 5;
+  const a = addRock(s, { x: 180, y: 459, amount: 10, type: "ice" });
+  G.tryTether(s, 0, a.id);
+  s.station.hp = 5;
+  const d = s.drones[0];
+  d.tether = s.tethers[0].id; d.mode = "unload"; d.d = 0; d.t = TICK / 2; d.cargo = 5; d.cargoType = "ice";
+  raider(s, { x: s.station.x, y: s.station.y });
+  G.drainEvents(s);
+  G.step(s);
+  eq(s.phase, "over");
+  eq(s.over.reason, "destroyed");
+  eq(s.station.hp, 0);
+  ok(types(G.drainEvents(s)).indexOf("station_repaired") < 0, "no repair after the ram");
+});
+test("drones: cargo type is kept until empty; a changed rock sends the drone home", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  const a = addRock(s, { x: 180, y: 500, amount: 50, type: "ore" });
+  G.tryTether(s, 0, a.id);
+  const d = s.drones[0];
+  let guard = 0;
+  while (d.mode !== "mine" && guard++ < 1000) G.step(s);
+  run(s, 3);
+  ok(d.cargo > 0 && d.cargo < 5, "mid-mining");
+  const had = d.cargo;
+  a.type = "crystal";
+  G.step(s);
+  eq(d.mode, "back");
+  eq(d.cargoType, "ore");
+  near(d.cargo, had, 1e-9);
+  run(s, 60 * 8);
+  ok(s.stats.delivered.ore >= had - 1e-9, "the ore was delivered as ore");
+});
+
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

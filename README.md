@@ -23,7 +23,9 @@ This is the prototype build. In so far: draw, mine, drift, cut (M1); relays, war
 ELECTRON_RUN_AS_NODE=1 "E:\Evan\Programs\VSCode\Code.exe" tools\serve.js
 ```
 
-PowerShell: `$env:ELECTRON_RUN_AS_NODE=1; & 'E:\Evan\Programs\VSCode\Code.exe' tools\serve.js`. Then open `http://<pc-ip>:8080` on the phone.
+PowerShell: `$env:ELECTRON_RUN_AS_NODE=1; & 'E:\Evan\Programs\VSCode\Code.exe' tools\serve.js`.
+
+By default the server listens on `127.0.0.1` only (this PC). For a phone on the same Wi-Fi add `--lan`, which listens on all interfaces (`0.0.0.0`): `... tools\serve.js --lan`, then open `http://<pc-ip>:8080` on the phone. An optional port can come first: `tools\serve.js 9000 --lan`.
 
 ## Test
 
