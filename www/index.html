@@ -10,9 +10,19 @@
 <body>
 <canvas id="game"></canvas>
 <div id="safe-probe"></div>
+
+<section id="screen-cards" class="screen" hidden>
+  <h1 id="cards-title">Sector cleared</h1>
+  <p id="cards-sub" class="sub"></p>
+  <div id="cards-list"></div>
+  <p id="cards-hint" class="sub">Tap a card to select it</p>
+  <button id="cards-take" class="primary" type="button" disabled>Take</button>
+</section>
+
 <script src="game.js"></script>
 <script src="render.js"></script>
 <script src="input.js"></script>
+<script src="ui.js"></script>
 <script src="main.js"></script>
 </body>
 </html>

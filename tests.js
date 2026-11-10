@@ -448,16 +448,6 @@ test("drones: crystal is worth 4, score 40 per unit", function () {
   ok(n > 0);
   near(s.gauge, n * 4, 1e-9); near(s.score, n * 40, 1);
 });
-test("drones: gauge clamps at gaugeMax in M1 (no warp yet)", function () {
-  const s = quiet(1);
-  s.gauge = s.params.gaugeMax - 1;
-  s.params.scroll = 0;
-  const a = addRock(s, { x: 180, y: 500, amount: 50, type: "crystal" });
-  G.tryTether(s, 0, a.id);
-  run(s, 60 * 20);
-  near(s.gauge, s.params.gaugeMax);
-  eq(s.phase, "play");
-});
 test("drones: cargo lost when the tether is cut, drone returns to the pool", function () {
   const s = quiet(1);
   s.params.scroll = 0;
@@ -528,7 +518,7 @@ test("ice: repairs 0.5 HP per unit, capped at hpMax", function () {
   near(s3.station.hp, 20, 1e-6);
 });
 
-// ---- relays (cascade logic exists in M1 and is exercised by hand-made relays)
+// ---- cascade (hand-made relay; the relay tests proper are further down)
 
 test("cascade: cutting a relay's link cuts what hangs off it", function () {
   const s = quiet(1);
@@ -550,6 +540,391 @@ test("cascade: cutting a relay's link cuts what hangs off it", function () {
   eq(G.tryTether(s, r.id, out.id).reason, "source_unpowered");
   ok(G.tryTether(s, 0, r.id).ok, "inert relay can be re-linked");
   eq(s.tethers[0].kind, "link");
+});
+
+// ---- relays
+
+// A husk at (x, y) with a tether from `from` (0 or a relay id); returns the husk.
+function huskOn(s, from, x, y) {
+  const h = addRock(s, { x: x, y: y, amount: 0 });
+  const a = from === 0 ? { x: 180, y: 560 } : s.rocks.find(function (r) { return r.id === from; });
+  const len = Math.hypot(h.x - a.x, h.y - a.y);
+  const t = { id: s.nextId++, from: from, to: h.id, kind: "idle", len: len, cost: len * 0.25, doomed: false, lastLaunch: -1000 };
+  s.tethers.push(t);
+  h.tether = t.id;
+  return h;
+}
+
+test("makeRelay: every failure reason, then success", function () {
+  const s = rich(quiet(1));
+  s.params.scroll = 0;
+  const live = addRock(s, { x: 100, y: 300 });
+  const bare = addRock(s, { x: 260, y: 300, amount: 0 });
+  const h = huskOn(s, 0, 180, 400);
+  eq(G.makeRelay(s, 9999).reason, "no_rock");
+  eq(G.makeRelay(s, live.id).reason, "not_depleted");
+  eq(G.makeRelay(s, bare.id).reason, "not_tethered");
+  G.drainEvents(s);
+  const r = G.makeRelay(s, h.id);
+  ok(r.ok);
+  ok(h.relay);
+  eq(s.tethers[0].kind, "link");
+  eq(s.stats.relaysMade, 1);
+  eq(G.drainEvents(s), [{ type: "relay_created", id: h.id, x: 180, y: 400 }]);
+  eq(G.makeRelay(s, h.id).reason, "already_relay");
+  s.phase = "cards";
+  eq(G.makeRelay(s, h.id).reason, "bad_phase");
+});
+test("makeRelay: relay_cap at 4 and too_deep beyond 3 relays", function () {
+  const s = rich(quiet(1));
+  s.params.scroll = 0;
+  const hs = [];
+  for (let i = 0; i < 5; i++) hs.push(huskOn(s, 0, 40 + i * 70, 430));
+  for (let i = 0; i < 4; i++) ok(G.makeRelay(s, hs[i].id).ok);
+  eq(G.makeRelay(s, hs[4].id).reason, "relay_cap");
+  const d = rich(quiet(1));
+  d.params.scroll = 0;
+  const a = huskOn(d, 0, 180, 450); ok(G.makeRelay(d, a.id).ok);
+  const b = huskOn(d, a.id, 180, 360); ok(G.makeRelay(d, b.id).ok);
+  const c = huskOn(d, b.id, 180, 270); ok(G.makeRelay(d, c.id).ok);
+  const e = huskOn(d, c.id, 180, 180);
+  eq(G.makeRelay(d, e.id).reason, "too_deep");
+  const inert = addRock(d, { x: 100, y: 120, amount: 0 }); inert.relay = true;
+  eq(G.tryTether(d, c.id, inert.id).reason, "too_deep", "linking a 4th relay is refused too");
+});
+test("relays: a powered relay is a source; drones haul through the chain", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  const h = huskOn(s, 0, 180, 420);
+  ok(G.makeRelay(s, h.id).ok);
+  ok(G.powered(s, h.id));
+  const ore = addRock(s, { x: 180, y: 330, amount: 12 });
+  const pv = G.previewTether(s, h.id, 180, 330, 10);
+  ok(pv.ok); eq(pv.toId, ore.id);
+  near(pv.cost, 90 * 0.25, 1e-9);
+  const t = G.tryTether(s, h.id, ore.id);
+  ok(t.ok);
+  const mine = s.tethers.find(function (x) { return x.id === t.id; });
+  eq(mine.kind, "mine"); eq(mine.from, h.id);
+  run(s, 60 * 20);
+  near(s.stats.delivered.ore, 12, 1e-6);
+  ok(s.gauge > 11);
+});
+test("relays: link tether keeps costing power and gets no drones", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  const h = huskOn(s, 0, 180, 420);
+  G.makeRelay(s, h.id);
+  run(s, 1);
+  near(s.power.use, 35, 1e-6);
+  run(s, 120);
+  eq(s.drones.filter(function (d) { return d.tether; }).length, 0);
+});
+test("relays: cutting the link cascades; the relay stays inert and can be re-linked", function () {
+  const s = rich(quiet(1));
+  s.params.scroll = 0;
+  const h = huskOn(s, 0, 180, 420);
+  G.makeRelay(s, h.id);
+  const a = addRock(s, { x: 120, y: 300 }), b = addRock(s, { x: 240, y: 300 });
+  ok(G.tryTether(s, h.id, a.id).ok); ok(G.tryTether(s, h.id, b.id).ok);
+  G.drainEvents(s);
+  const c = G.cutTether(s, h.tether);
+  eq(c.cut.length, 3);
+  eq(s.tethers.length, 0);
+  ok(h.relay && h.tether === 0 && !G.powered(s, h.id));
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "tether_cut"; }).map(function (e) { return e.reason; }), ["player", "cascade", "cascade"]);
+  ok(G.tryTether(s, 0, h.id).ok);
+  eq(s.tethers[0].kind, "link");
+  ok(G.powered(s, h.id));
+});
+test("relays: a relay leaving the field cascades its tethers", function () {
+  const s = rich(quiet(1));
+  s.params.scroll = 60;
+  const h = huskOn(s, 0, 180, 640);
+  G.makeRelay(s, h.id);
+  const a = addRock(s, { x: 180, y: 400 });
+  ok(G.tryTether(s, h.id, a.id).ok);
+  G.drainEvents(s);
+  run(s, 60);
+  eq(s.tethers.length, 0);
+  const reasons = G.drainEvents(s).filter(function (e) { return e.type === "tether_cut"; }).map(function (e) { return e.reason; });
+  ok(reasons.indexOf("offscreen") >= 0 && reasons.indexOf("cascade") >= 0, reasons.join());
+  ok(a.tether === 0);
+});
+test("relays: Relay Hub style relayCostMul halves tethers drawn from relays", function () {
+  const s = quiet(1);
+  const h = huskOn(s, 0, 180, 420);
+  G.makeRelay(s, h.id);
+  addRock(s, { x: 180, y: 330 });
+  s.mods.relayCostMul = 0.5;
+  near(G.previewTether(s, h.id, 180, 330, 5).cost, 90 * 0.25 * 0.5, 1e-9);
+});
+
+// ---- warp
+
+function nearlyFull(seed, opts) {
+  const s = quiet(seed || 1, opts);
+  s.params.scroll = 0;
+  const a = addRock(s, { x: 180, y: 459, amount: 40 });
+  G.tryTether(s, 0, a.id);
+  s.gauge = s.params.gaugeMax - 1;
+  return s;
+}
+test("warp: gauge full -> warp for 1.2 s -> cards with an offer; score +300 once", function () {
+  const s = nearlyFull(3);
+  s.score = 0;
+  let ticks = 0;
+  while (s.phase === "play" && ticks++ < 3000) G.step(s);
+  eq(s.phase, "warp");
+  near(s.gauge, s.params.gaugeMax);
+  const full = G.drainEvents(s).filter(function (e) { return e.type === "gauge_full"; });
+  eq(full, [{ type: "gauge_full", sector: 1 }]);
+  const scoreAtFull = s.score;
+  ok(scoreAtFull >= 300 && scoreAtFull < 300 + 100);
+  near(s.phaseT, 1.2, 1e-9);
+  let n = 0;
+  while (s.phase === "warp") { G.step(s); n++; }
+  ok(n >= 72 && n <= 73, "warp lasts " + n + " ticks");
+  eq(s.phase, "cards");
+  eq(s.offer.length, 3);
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "cards_offered"; })[0].ids, s.offer);
+  eq(s.score, scoreAtFull, "no second sector bonus");
+});
+test("warp: only the field drifts; drones and timers freeze; offscreen cuts still apply", function () {
+  const s = nearlyFull(3);
+  s.timers.flare = 10;
+  let ticks = 0;
+  while (s.phase === "play" && ticks++ < 3000) G.step(s);
+  eq(s.phase, "warp");
+  s.params.scroll = 30;
+  const rock = s.rocks[0], y0 = rock.y, flare0 = s.timers.flare, spawn0 = s.timers.spawn, tick0 = s.sectorTick;
+  const dronesBefore = JSON.stringify(s.drones.map(function (d) { return [d.mode, d.d, d.cargo]; }));
+  run(s, 30);
+  near(rock.y - y0, 30 * 30 * TICK, 1e-9);
+  eq(s.timers.flare, flare0); eq(s.timers.spawn, spawn0); eq(s.sectorTick, tick0);
+  eq(JSON.stringify(s.drones.map(function (d) { return [d.mode, d.d, d.cargo]; })), dronesBefore);
+  rock.y = 700;
+  G.drainEvents(s);
+  run(s, 1);
+  eq(s.tethers.length, 0);
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "tether_cut"; })[0].reason, "offscreen");
+});
+test("warp: player actions are refused during warp and cards", function () {
+  const s = nearlyFull(3);
+  const a = addRock(s, { x: 100, y: 300 });
+  s.gauge = s.params.gaugeMax;
+  s.phase = "warp"; s.phaseT = 1.2;
+  eq(G.tryTether(s, 0, a.id).reason, "bad_phase");
+  eq(G.cutAcross(s, 0, 0, 360, 640).cut, []);
+  eq(G.pickCard(s, "extra_drones").reason, "bad_phase");
+});
+test("warp: gauge clamps at gaugeMax and overflow is lost", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  s.gauge = s.params.gaugeMax - 1;
+  const a = addRock(s, { x: 180, y: 500, amount: 50, type: "crystal" });
+  G.tryTether(s, 0, a.id);
+  run(s, 60 * 20);
+  near(s.gauge, s.params.gaugeMax);
+  ok(s.phase === "warp" || s.phase === "cards");
+});
+
+// ---- offers and picks
+
+function offerAt(seed, sector, cards) {
+  const s = quiet(seed, { sector: sector });
+  Object.keys(cards || {}).forEach(function (k) { s.cards[k] = cards[k]; });
+  s.gauge = s.params.gaugeMax;
+  s.phase = "warp"; s.phaseT = TICK;
+  run(s, 2);
+  return s;
+}
+test("offer: 3 distinct real cards, same seed same offer, different seed varies", function () {
+  const a = offerAt(5, 1), b = offerAt(5, 1);
+  eq(a.phase, "cards");
+  eq(a.offer.length, 3);
+  eq(new Set(a.offer).size, 3);
+  a.offer.forEach(function (id) { ok(id !== "patch_kit"); });
+  eq(a.offer, b.offer);
+  const seen = new Set();
+  for (let seed = 1; seed <= 30; seed++) seen.add(offerAt(seed, 1).offer.join());
+  ok(seen.size > 5, "offers vary with the seed");
+});
+test("offer: epics only after sector 3 is cleared; maxed cards are excluded", function () {
+  for (let seed = 1; seed <= 60; seed++) ok(offerAt(seed, 2).offer.indexOf("crystal_chain") < 0, "no epic in sector 2");
+  let epics = 0;
+  for (let seed = 1; seed <= 80; seed++) if (offerAt(seed, 3).offer.indexOf("crystal_chain") >= 0) epics++;
+  ok(epics > 0, "crystal chain shows up once sector 3 is cleared");
+  for (let seed = 1; seed <= 40; seed++) {
+    ok(offerAt(seed, 3, { crystal_chain: 2, extra_drones: 5 }).offer.every(function (id) { return id !== "crystal_chain" && id !== "extra_drones"; }));
+  }
+});
+test("offer: rarity weights come out near 60 / 30 / 10", function () {
+  const c = { common: 0, rare: 0, epic: 0 };
+  for (let seed = 1; seed <= 400; seed++) {
+    offerAt(seed, 3).offer.forEach(function (id) { c[G.CARDS.find(function (k) { return k.id === id; }).rarity]++; });
+  }
+  ok(c.common > c.rare && c.rare > c.epic, JSON.stringify(c));
+  ok(c.epic > 20, JSON.stringify(c));
+});
+test("offer: patch kit fills in when the pool runs dry (never more than one)", function () {
+  const all = {};
+  G.CARDS.forEach(function (c) { if (c.id !== "patch_kit") all[c.id] = c.max; });
+  const left = Object.assign({}, all); left.live_wire = 0; left.splitter = 0;
+  const s = offerAt(2, 3, left);
+  eq(s.offer.slice().sort(), ["live_wire", "patch_kit", "splitter"].sort());
+  const none = offerAt(2, 3, all);
+  eq(none.offer, ["patch_kit"]);
+});
+test("pickCard: reasons, applies the card, starts the next sector", function () {
+  const s = quiet(8);
+  s.params.scroll = 0;
+  const a = addRock(s, { x: 180, y: 459, amount: 40 });
+  G.tryTether(s, 0, a.id);
+  addRock(s, { x: 50, y: 100, amount: 0 });
+  s.station.hp = 60;
+  s.gauge = s.params.gaugeMax;
+  s.phase = "warp"; s.phaseT = TICK;
+  s.raiders.push({ id: s.nextId++, x: 10, y: 10, hp: 5, hpMax: 5, mode: "approach", tether: 0, d: 0, t: 0 });
+  run(s, 2);
+  eq(s.phase, "cards");
+  eq(G.pickCard(s, "nope").reason, "not_offered");
+  G.drainEvents(s);
+  const id = s.offer[0];
+  const score0 = s.score;
+  ok(G.pickCard(s, id).ok);
+  eq(G.pickCard(s, id).reason, "bad_phase");
+  eq(s.phase, "play"); eq(s.sector, 2); eq(s.cards[id], 1); eq(s.offer, []); eq(s.gauge, 0);
+  eq(s.tethers.length, 0); eq(s.raiders.length, 0); eq(s.rocks.length, 7);
+  ok(s.rocks.every(function (r) { return r.tether === 0 && !r.relay && !r.depleted; }));
+  s.drones.forEach(function (d) { eq(d.mode, "idle"); });
+  near(s.power.use, 0);
+  ok(s.station.hp >= 75 - 1e-9 && s.station.hp <= 75 + 30 + 1e-9, "warp repair of 15 (plus the card)");
+  eq(s.score, score0);
+  eq(s.params, G.sectorParams(2));
+  eq(s.timers.flare, 20);
+  eq(s.stats.cardsPicked, 1);
+  const ev = types(G.drainEvents(s));
+  ok(ev.indexOf("card_picked") >= 0 && ev.indexOf("sector_start") >= 0);
+});
+test("pickCard: warp repair is capped at hpMax", function () {
+  const s = offerAt(4, 1);
+  s.station.hp = 95;
+  s.offer = ["overclock", "power_cell", "bigger_holds"];
+  G.pickCard(s, "overclock");
+  eq(s.station.hp, 100);
+  ok(!("starsRun" in s));
+});
+
+// ---- cards
+
+test("cards: every card's fx changes the mods as in 3.2", function () {
+  const want = {
+    extra_drones: { droneAdd: 2 }, overclock: { droneSpeedMul: 1.2 }, bigger_holds: { capAdd: 2 }, power_cell: { powerAdd: 25 },
+    long_reach: { maxLenAdd: 60, severAdd: 30 }, point_defense: { turretRangeAdd: 25, turretDpsAdd: 6 },
+    reinforced_hull: { hullAdd: 25 }, coolant_loop: { iceRepair: 1.0 }, splitter: { splitShare: 0.4 },
+    live_wire: { zapDps: 10 }, crystal_chain: { chainRange: 90 }, patch_kit: {}
+  };
+  eq(G.CARDS.length, 12);
+  G.CARDS.forEach(function (c) {
+    const m = G.computeMods(Object.fromEntries([[c.id, 1]]));
+    const base = G.computeMods({});
+    Object.keys(want[c.id]).forEach(function (k) { near(m[k], want[c.id][k], 1e-9, c.id + "." + k); });
+    Object.keys(m).forEach(function (k) { if (!(k in want[c.id])) near(m[k], base[k], 1e-9, c.id + " leaves " + k); });
+  });
+  eq(G.CARDS.filter(function (c) { return c.rarity === "common"; }).length, 8);
+});
+test("cards: stacking to max, Crystal Chain 90 then 130, fresh computeMods equals incremental", function () {
+  near(G.computeMods({ extra_drones: 5 }).droneAdd, 10);
+  near(G.computeMods({ overclock: 3 }).droneSpeedMul, 1.728, 1e-9);
+  near(G.computeMods({ crystal_chain: 2 }).chainRange, 130);
+  near(G.computeMods({ live_wire: 2 }).zapDps, 20);
+  near(G.computeMods({ splitter: 2 }).splitShare, 0.8, 1e-9);
+  const s = offerAt(6, 3);
+  G.pickCard(s, s.offer[0]);
+  eq(s.mods, G.computeMods(s.cards));
+  ok(G.cardText("crystal_chain", 1).indexOf("90") > 0);
+  ok(G.cardText("crystal_chain", 2).indexOf("130") > 0);
+  eq(G.cardText("extra_drones", 2), "+4 drones.");
+});
+test("cards: Extra Drones adds idle drones at once; Hull and Patch Kit heal", function () {
+  const s = offerAt(1, 1);
+  s.offer[0] = "extra_drones";
+  const n0 = s.drones.length;
+  ok(G.pickCard(s, "extra_drones").ok);
+  eq(s.drones.length, n0 + 2);
+  const s2 = offerAt(1, 1);
+  s2.offer[0] = "reinforced_hull";
+  s2.station.hp = 40;
+  G.pickCard(s2, "reinforced_hull");
+  eq(s2.station.hpMax, 125);
+  near(s2.station.hp, 40 + 25 + 15, 1e-9);
+  const s3 = offerAt(1, 1);
+  s3.offer[0] = "patch_kit"; s3.station.hp = 10;
+  G.pickCard(s3, "patch_kit");
+  near(s3.station.hp, 10 + 30 + 15, 1e-9);
+});
+test("cards: Power Cell and Long Reach change the budget and the reach", function () {
+  const s = offerAt(1, 1);
+  s.offer[0] = "power_cell";
+  G.pickCard(s, "power_cell");
+  eq(s.power.budget, 125);
+  const l = offerAt(1, 1);
+  l.offer[0] = "long_reach";
+  G.pickCard(l, "long_reach");
+  l.rocks.length = 0;
+  const far = addRock(l, { x: 10, y: 310, size: "s" });
+  ok(G.tryTether(l, 0, far.id).ok, "reach is 360 now");
+});
+
+test("splitter: a full drone delivers a 40% bonus that is not taken from the rock", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  s.mods = G.computeMods({ splitter: 1 });
+  const a = addRock(s, { x: 180, y: 459, amount: 40 });
+  G.tryTether(s, 0, a.id);
+  G.drainEvents(s);
+  run(s, 60 * 6);
+  const evs = G.drainEvents(s);
+  ok(evs.some(function (e) { return e.type === "drone_split"; }), "split event");
+  const del = evs.filter(function (e) { return e.type === "delivery"; })[0];
+  near(del.amount, 7, 1e-9);
+  near(del.value, 7, 1e-9);
+  const hauled = s.stats.delivered.ore + s.drones.reduce(function (m, d) { return m + d.cargo; }, 0);
+  ok(40 - a.amount < hauled, "more was delivered than was taken from the rock");
+  ok(s.score >= 70);
+});
+test("crystal chain: mined-out crystal turns the nearest live non-crystal rock within range, then chains", function () {
+  const s = quiet(1);
+  s.params.scroll = 0;
+  s.mods = G.computeMods({ crystal_chain: 1 });
+  const c1 = addRock(s, { x: 180, y: 459, amount: 2, type: "crystal" });
+  const far = addRock(s, { x: 180, y: 300, type: "ore" });           // 159 away: out of range
+  const mid = addRock(s, { x: 270, y: 400, type: "ore" });           // 107 away: out of range 90
+  const nearIce = addRock(s, { x: 180, y: 380, type: "ice" });       // 79 away
+  const nearOre = addRock(s, { x: 230, y: 420, type: "ore" });       // 63 away: nearest
+  G.tryTether(s, 0, c1.id);
+  G.drainEvents(s);
+  run(s, 60 * 5);
+  ok(c1.depleted);
+  eq(nearOre.type, "crystal");
+  eq(nearIce.type, "ice"); eq(far.type, "ore"); eq(mid.type, "ore");
+  eq(G.drainEvents(s).filter(function (e) { return e.type === "crystal_chain"; }), [{ type: "crystal_chain", from: c1.id, to: nearOre.id }]);
+  // it chains again when the converted rock empties
+  nearOre.amount = 0.01; nearOre.amountMax = 0.01;
+  ok(G.tryTether(s, 0, nearOre.id).ok);
+  run(s, 60 * 6);
+  ok(nearOre.depleted);
+  eq(mid.type, "crystal", "chained on to the next nearest rock");
+  eq(nearIce.type, "ice");
+  // without the card nothing converts
+  const t = quiet(1);
+  t.params.scroll = 0;
+  const d1 = addRock(t, { x: 180, y: 459, amount: 2, type: "crystal" });
+  const o = addRock(t, { x: 230, y: 420, type: "ore" });
+  G.tryTether(t, 0, d1.id);
+  run(t, 60 * 5);
+  eq(o.type, "ore");
 });
 
 // ---- run over

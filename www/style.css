@@ -26,3 +26,79 @@ canvas#game {
   visibility: hidden;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+
+/* ---- DOM screens (card pick, pause, run over) */
+[hidden] { display: none !important; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8f0ff; }
+.screen {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+  background: rgba(5, 7, 13, 0.95);
+  overflow-y: auto;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.screen h1 { margin: 12px 0 4px; font-size: 22px; letter-spacing: 0.08em; text-align: center; }
+.screen .sub { margin: 4px 0 12px; font-size: 14px; color: #8fa0ba; text-align: center; }
+.screen .big { font-size: 34px; font-weight: 700; margin: 6px 0; }
+.screen .stat { font-size: 15px; color: #c3d0e6; margin: 4px 0; text-align: center; }
+.screen .spacer { flex: 1 1 auto; min-height: 12px; }
+button { font: inherit; color: inherit; }
+button.primary, button.secondary {
+  width: 100%;
+  max-width: 420px;
+  min-height: 56px;
+  margin-top: 10px;
+  border-radius: 14px;
+  font-size: 18px;
+  font-weight: 700;
+  border: 2px solid #38d6ff;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button.primary { background: #38d6ff; color: #05222c; }
+button.secondary { background: transparent; color: #e8f0ff; border-color: #3a4a63; min-height: 48px; font-size: 16px; }
+button.primary:disabled { background: #1c2a38; color: #5d6c80; border-color: #2a3a4c; cursor: default; }
+#cards-list { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 10px; }
+button.card {
+  display: block;
+  width: 100%;
+  min-height: 112px;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  text-align: left;
+  background: #0d1522;
+  border: 2px solid #2a3a4c;
+  border-radius: 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+button.card .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+button.card .rar { font-size: 12px; font-weight: 700; letter-spacing: 0.1em; }
+button.card .nm { font-size: 18px; font-weight: 700; }
+button.card .tx { margin-top: 8px; font-size: 14px; color: #c3d0e6; }
+button.card .own { margin-top: 6px; font-size: 12px; color: #8fa0ba; }
+button.card.common .rar { color: #9fb3c8; }
+button.card.rare .rar { color: #5db4ff; }
+button.card.epic .rar { color: #ff3fd2; }
+button.card.filler .rar { color: #43e08a; }
+button.card.selected { border-color: #38d6ff; background: #10253a; }
+button.card.locked { opacity: 0.55; }
+.hud-btn {
+  position: fixed;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 2px solid #3a4a63;
+  border-radius: 12px;
+  background: rgba(13, 21, 34, 0.8);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}

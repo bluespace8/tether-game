@@ -2,7 +2,7 @@
 
 A portrait, one-thumb asteroid-mining game. You draw lines (tethers) from your station to asteroids; drones run along them, mine, and haul ore, ice and crystal home. Spec: `ARCHITECTURE.md`.
 
-This is the prototype build. Milestone 1 is in: draw, mine, drift, cut.
+This is the prototype build. In so far: draw, mine, drift, cut (M1); relays, warp and upgrade cards (M2).
 
 ## Play
 
@@ -11,7 +11,9 @@ This is the prototype build. Milestone 1 is in: draw, mine, drift, cut.
 - Swipe across a tether to cut it. Tapping never cuts.
 - Rocks drift down; a rock leaving the bottom breaks its tether. Tethers longer than 300 units snap.
 - URL options: `?seed=N` fixes the field, `?sector=N` starts in that sector.
-- Reload the page to start a new run (run over and pause screens come in a later milestone).
+- Tap a mined-out rock that still has a tether to turn it into a relay, then draw new tethers from the relay. Cutting a relay's link cuts everything hanging off it.
+- Delivered material fills the WARP gauge. When it is full the game warps to the next sector and offers up to three cards: tap one to select it, tap it again (or press Take) to confirm.
+- Reload the page to start a new run (run over and pause screens come in the next milestone).
 
 ## Phone testing
 
