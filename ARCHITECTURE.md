@@ -522,7 +522,7 @@ the front end must never need them to draw the state correctly.
 | `tether_cut` | `id, reason: "player"|"flare"|"overstretch"|"offscreen"|"cascade"`, `x, y` (midpoint) | snip, sparks |
 | `rock_depleted` | `id, x, y, star` | puff; hint "tap to relay" if tethered |
 | `relay_created` | `id, x, y` | chime, ring |
-| `delivery` | `type, amount, value, x, y` | throttled tick sound, +N float text |
+| `delivery` | `resource, amount, value, x, y` | throttled tick sound, +N float text |
 | `station_repaired` | `hp, amount` | green float text |
 | `brownout` | `on: bool` | power meter flash, low hum |
 | `drone_split` | `droneId` | small shard sprite |
